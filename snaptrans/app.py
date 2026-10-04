@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon
 
+from . import __version__, log
 from .config import load_config, save_config
 from .glass import QSS
 from .lens import LensWindow
@@ -34,10 +35,6 @@ WM_HOTKEY = 0x0312
 MOD_NOREPEAT = 0x4000
 _MODS = {"ctrl": 0x0002, "alt": 0x0001, "shift": 0x0004, "win": 0x0008}
 HOTKEY_ID = 0x5A5A
-
-
-def log(message: str) -> None:
-    print(f"[snaptrans] {message}", flush=True)
 
 
 def _parse_hotkey(text: str) -> tuple[int, int] | None:
@@ -170,7 +167,7 @@ class SnapTransApp(QObject):
         menu.addSeparator()
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
-        self.tray.setToolTip("SnapTrans 翻译放大镜")
+        self.tray.setToolTip(f"SnapTrans v{__version__} 翻译放大镜")
         self.tray.activated.connect(
             lambda reason: self._summon() if reason == QSystemTrayIcon.Trigger else None
         )
@@ -237,5 +234,8 @@ def main() -> int:
     app.setWindowIcon(_make_icon())
 
     controller = SnapTransApp(app)  # 局部变量保持引用存活，防止控制器被垃圾回收
-    log("SnapTrans 已启动，按 Ctrl+Alt+T 唤出翻译放大镜")
+    log(
+        f"SnapTrans v{__version__} 已启动 · 自动翻译"
+        f"{'开' if controller.cfg.get('auto_translate') else '关'} · 热键 {controller.cfg.get('hotkey')}"
+    )
     return app.exec()

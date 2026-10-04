@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import log
 from .config import save_config
 from .glass import DragBar
 from .ocr_engine import OcrEngine, qimage_to_bgr
@@ -444,17 +445,24 @@ class LensWindow(QWidget):
         self.hide()
         QApplication.processEvents()
         time.sleep(0.06)  # 等合成器把窗口真正撤下
-        shot = screen.grabWindow(0).toImage()
+        try:
+            shot = screen.grabWindow(0).toImage()
+            g0 = screen.geometry().topLeft()
+            local = QRect(canvas_tl, canvas_size).translated(-g0)
+            x0, y0 = round(local.x() * dpr), round(local.y() * dpr)
+            x1 = min(shot.width(), round((local.x() + local.width()) * dpr))
+            y1 = min(shot.height(), round((local.y() + local.height()) * dpr))
+            crop = shot.copy(QRect(x0, y0, max(x1 - x0, 1), max(y1 - y0, 1)))
+        except Exception as exc:
+            self.show()
+            self.raise_()
+            self._set_status(f"⚠ 截屏失败：{exc}", "panelError")
+            return
         self.show()
         self.raise_()
 
-        g0 = screen.geometry().topLeft()
-        local = QRect(canvas_tl, canvas_size).translated(-g0)
-        x0, y0 = round(local.x() * dpr), round(local.y() * dpr)
-        x1 = min(shot.width(), round((local.x() + local.width()) * dpr))
-        y1 = min(shot.height(), round((local.y() + local.height()) * dpr))
-        crop = shot.copy(QRect(x0, y0, max(x1 - x0, 1), max(y1 - y0, 1)))
         if crop.isNull() or crop.width() < 2 or crop.height() < 2:
+            self._set_status("⚠ 截屏失败：区域无效", "panelError")
             return
 
         self._captured_geometry = QRect(canvas_tl, canvas_size)
@@ -555,6 +563,7 @@ class LensWindow(QWidget):
         if QGuiApplication.mouseButtons() & Qt.LeftButton:
             self._auto_timer.start()  # 还在拖拽（中途停顿），松手再翻译
             return
+        log("自动翻译：位置调整触发")
         self.refresh()
 
     def set_auto_translate(self, enabled: bool):
