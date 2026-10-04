@@ -26,7 +26,7 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
-        self.setFixedSize(480, 380)
+        self.setFixedSize(480, 430)
         self._centered = False
 
         root = QVBoxLayout(self)
@@ -76,9 +76,13 @@ class SettingsDialog(QDialog):
         self.model_combo.setCurrentText(cfg.get("model", "glm-4-flash"))
         lay.addWidget(self.model_combo)
 
-        lay.addWidget(QLabel("全局热键（修改后重启生效）", objectName="fieldLabel"))
+        lay.addWidget(QLabel("全局热键（修改后立即生效）", objectName="fieldLabel"))
         self.hotkey_edit = QLineEdit(cfg.get("hotkey", "ctrl+alt+t"))
         lay.addWidget(self.hotkey_edit)
+
+        lay.addWidget(QLabel("剪贴板翻译热键（修改后立即生效）", objectName="fieldLabel"))
+        self.clip_hotkey_edit = QLineEdit(cfg.get("hotkey_clipboard", "ctrl+alt+b"))
+        lay.addWidget(self.clip_hotkey_edit)
 
         note = QLabel("GLM-4-Flash 免费调用；Key 仅保存在本目录的 config.json 中。", objectName="panelStatus")
         note.setWordWrap(True)
@@ -104,6 +108,7 @@ class SettingsDialog(QDialog):
             "api_key": self.key_edit.text().strip(),
             "model": self.model_combo.currentText().strip() or "glm-4-flash",
             "hotkey": self.hotkey_edit.text().strip() or "ctrl+alt+t",
+            "hotkey_clipboard": self.clip_hotkey_edit.text().strip() or "ctrl+alt+b",
         }
 
     def showEvent(self, e):

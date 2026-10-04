@@ -1,0 +1,7 @@
+# SnapTrans 术语表：每行一条，格式「英文 = 中文」（也支持 -> 或 Tab 分隔）
+# 以 # 开头的行为注释；保存本文件后立即生效，无需重启程序。
+# 例：
+# ZCode = ZCode
+# MCP = MCP
+# sandbox = 沙箱
+# prompt = 提示词

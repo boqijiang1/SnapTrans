@@ -1,7 +1,8 @@
-"""GLM 翻译客户端（智谱开放平台 OpenAI 兼容接口）：编号协议 + 行级缓存。"""
+"""GLM 翻译客户端（智谱开放平台 OpenAI 兼容接口）：编号协议 + 行级缓存 + 术语表。"""
 
 from __future__ import annotations
 
+import os
 import re
 import time
 
@@ -51,10 +52,54 @@ def _parse_reply(content: str, n: int) -> list[str]:
 class Translator:
     BATCH = 40
     CACHE_MAX = 800
+    GLOSSARY_MAX = 80
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, glossary_path: str | None = None):
         self.cfg = cfg
         self._cache: dict[str, str] = {}
+        self._glossary_path = glossary_path
+        self._glossary: list[tuple[str, str]] = []
+        self._glossary_mtime: float | None = None
+
+    # ---- 术语表 ----
+    def _load_glossary(self) -> None:
+        """按文件 mtime 增量加载术语表，保存后即时生效。"""
+        path = self._glossary_path
+        if not path:
+            return
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            if self._glossary:
+                self._glossary = []
+                self._glossary_mtime = None
+            return
+        if mtime == self._glossary_mtime:
+            return
+        terms: list[tuple[str, str]] = []
+        try:
+            with open(path, encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    for sep in ("->", "→", "=", "\t"):
+                        if sep in line:
+                            src, dst = (part.strip() for part in line.split(sep, 1))
+                            if src and dst:
+                                terms.append((src, dst))
+                            break
+        except OSError:
+            return
+        self._glossary = terms[: self.GLOSSARY_MAX]
+        self._glossary_mtime = mtime
+
+    def _system_prompt(self) -> str:
+        self._load_glossary()
+        if not self._glossary:
+            return SYSTEM_PROMPT
+        lines = "\n".join(f"{s} = {d}" for s, d in self._glossary)
+        return SYSTEM_PROMPT + f"\n\n术语表（遇到下列词语必须严格按此翻译）：\n{lines}"
 
     def translate_lines(self, texts: list[str]) -> list[str]:
         """逐行翻译，保持行数与顺序；纯符号行原样返回。"""
@@ -81,7 +126,7 @@ class Translator:
         payload = {
             "model": self.cfg.get("model", "glm-4-flash"),
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self._system_prompt()},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,

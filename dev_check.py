@@ -118,9 +118,34 @@ def check_widgets():
     print("[ok] lens rendered -> dev_lens_replace.png / dev_lens_hover.png")
 
 
+def check_glossary():
+    import tempfile
+
+    from snaptrans.translator import Translator
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("# 注释行\nZCode = ZCode\nMCP -> MCP\nsandbox\t沙箱\n没有分隔符的坏行\n\n")
+        path = f.name
+
+    tr = Translator({"api_key": "x"}, glossary_path=path)
+    prompt = tr._system_prompt()
+    assert "ZCode = ZCode" in prompt, prompt
+    assert "MCP = MCP" in prompt, prompt
+    assert "sandbox = 沙箱" in prompt, prompt
+    assert "坏行" not in prompt, prompt
+    print("[ok] glossary parsing & injection")
+
+
 if __name__ == "__main__":
     failures = 0
-    for name, fn in (("translator", check_translator), ("ocr", check_ocr), ("widgets", check_widgets)):
+    for name, fn in (
+        ("translator", check_translator),
+        ("glossary", check_glossary),
+        ("ocr", check_ocr),
+        ("widgets", check_widgets),
+    ):
         try:
             fn()
         except Exception as exc:
