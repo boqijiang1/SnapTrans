@@ -347,6 +347,12 @@ class LensWindow(QWidget):
         self._last_status = ""
         self._flash_text = ""
         self._sized_once = False
+        self._auto_enabled = bool(cfg.get("auto_translate", True))
+        self._captured_geometry: QRect | None = None
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(450)  # 移动停稳 450ms 后自动翻译
+        self._auto_timer.timeout.connect(self._auto_refresh)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -426,6 +432,7 @@ class LensWindow(QWidget):
 
     def refresh(self):
         """截取画布正下方的屏幕区域（短暂隐藏自己），交给 OCR+翻译线程。"""
+        self._auto_timer.stop()
         canvas_tl = self.canvas.mapToGlobal(QPoint(0, 0))
         canvas_size = self.canvas.size()
         if canvas_size.width() < 24 or canvas_size.height() < 24:
@@ -450,6 +457,7 @@ class LensWindow(QWidget):
         if crop.isNull() or crop.width() < 2 or crop.height() < 2:
             return
 
+        self._captured_geometry = QRect(canvas_tl, canvas_size)
         self._run_id += 1  # 在途的旧结果作废（支持连按刷新）
         run_id = self._run_id
         self._snapshot = crop
@@ -510,26 +518,49 @@ class LensWindow(QWidget):
             self._apply_mode("hover")
             self._set_status("悬停模式 · 鼠标移到句子上浮现译文，单击复制该行", remember=True)
 
-    # ---- 移动/缩放后使快照失效，恢复透视 ----
+    # ---- 移动/缩放后：快照失效恢复透视，并自动触发翻译 ----
     def _invalidate_snapshot(self, message: str):
         if not self.isVisible():
             return  # 未显示时的布局/初始定位不算用户操作
+        geo = QRect(self.canvas.mapToGlobal(QPoint(0, 0)), self.canvas.size())
+        if self._snapshot is not None and geo == self._captured_geometry:
+            return  # 几何没变（如 show 引发的伪移动事件），快照仍有效
         self._run_id += 1  # 在途结果作废
+        self._captured_geometry = None
         if self.canvas.has_snapshot() or self._items:
             self._snapshot = None
             self._items = []
             self.canvas.clear()
             self._set_status(message)
+        if self._auto_enabled:
+            self._auto_timer.start()  # 每次移动都重置，停稳后触发
 
     def moveEvent(self, e):
         super().moveEvent(e)
-        self._invalidate_snapshot("已移动 · 按 ↻ 翻译当前位置")
+        self._invalidate_snapshot(
+            "跟随移动 · 松手后自动翻译" if self._auto_enabled else "已移动 · 按 ↻ 翻译当前位置"
+        )
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._grip.move(self.width() - 18, self.height() - 18)
         self._grip.raise_()
-        self._invalidate_snapshot("已调整大小 · 按 ↻ 重新翻译")
+        self._invalidate_snapshot(
+            "调整大小 · 松手后自动翻译" if self._auto_enabled else "已调整大小 · 按 ↻ 重新翻译"
+        )
+
+    def _auto_refresh(self):
+        if not self.isVisible() or not self._auto_enabled:
+            return
+        if QGuiApplication.mouseButtons() & Qt.LeftButton:
+            self._auto_timer.start()  # 还在拖拽（中途停顿），松手再翻译
+            return
+        self.refresh()
+
+    def set_auto_translate(self, enabled: bool):
+        self._auto_enabled = enabled
+        if not enabled:
+            self._auto_timer.stop()
 
     # ---- 复制 ----
     def _copy(self):

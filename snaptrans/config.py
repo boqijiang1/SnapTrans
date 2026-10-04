@@ -12,6 +12,8 @@ DEFAULTS = {
     "hotkey": "ctrl+alt+t",
     # 翻译完成后浮窗的显示模式：hover=先显原文，悬停浮现译文；replace=全部原位替换
     "lens_mode": "hover",
+    # 移动/调整大小浮窗后自动触发翻译
+    "auto_translate": True,
     # 灰度均值低于该值视为深色背景，OCR 前自动反色
     "invert_threshold": 110,
 }

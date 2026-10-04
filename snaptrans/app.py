@@ -156,11 +156,16 @@ class SnapTransApp(QObject):
         menu.setAttribute(Qt.WA_TranslucentBackground)
         act_lens = QAction("翻译放大镜", menu)
         act_lens.triggered.connect(self._summon)
+        self.act_auto = QAction("移动后自动翻译", menu)
+        self.act_auto.setCheckable(True)
+        self.act_auto.setChecked(bool(self.cfg.get("auto_translate", True)))
+        self.act_auto.toggled.connect(self._set_auto)
         act_set = QAction("设置…", menu)
         act_set.triggered.connect(self.open_settings)
         act_quit = QAction("退出", menu)
         act_quit.triggered.connect(self.app.quit)
         menu.addAction(act_lens)
+        menu.addAction(self.act_auto)
         menu.addAction(act_set)
         menu.addSeparator()
         menu.addAction(act_quit)
@@ -185,6 +190,13 @@ class SnapTransApp(QObject):
             self.lens = LensWindow(self.engine, self.translator, self.cfg)
             log("翻译放大镜已创建")
         self.lens.summon_at_cursor()
+
+    def _set_auto(self, checked: bool):
+        self.cfg["auto_translate"] = bool(checked)
+        save_config(self.cfg)
+        if self.lens is not None:
+            self.lens.set_auto_translate(checked)
+        self._tray_msg("已保存", "移动后自动翻译：" + ("开" if checked else "关"))
 
     # ---- 设置 ----
     def open_settings(self):
