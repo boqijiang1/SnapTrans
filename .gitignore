@@ -3,6 +3,11 @@
 __pycache__/
 *.pyc
 
+# PyInstaller 产物
+dist/
+build/
+*.spec
+
 # 含 API Key，绝不入库
 config.json
 
