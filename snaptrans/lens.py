@@ -1,9 +1,10 @@
-"""翻译放大镜：小块玻璃浮窗，浮在目标文字上方，译文按原文的位置、字号、配色原位替换。
+"""翻译放大镜：小块玻璃浮窗，浮在目标文字上方，两种显示模式：
 
-定位时浮窗近乎全透明（可透视下层内容）；按 ↻ 后画布先显示截取的原样快照，
-再把每个文本块的中文译文用采样自截图的背景色盖住原文、原位重绘——
-排版、字号、明暗与原文一致，看起来就像界面本来就是中文的。
-双击浮窗可隐藏译文、对照原文。
+- 悬停模式（默认）：翻译后先显示原文快照，鼠标移到某句话上浮现双语对照气泡，
+  单击该行只复制该行译文；
+- 替换模式：译文按原文的位置、字号、配色原位替换，适合通读整段。
+
+定位时浮窗近乎全透明（可透视下层内容）；按 ↻ 后画布先显示截取的原样快照。
 """
 
 from __future__ import annotations
@@ -11,7 +12,18 @@ from __future__ import annotations
 import time
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    QVariantAnimation,
+)
 from PySide6.QtGui import (
     QCursor,
     QColor,
@@ -21,6 +33,7 @@ from PySide6.QtGui import (
     QImage,
     QPainter,
     QPainterPath,
+    QPen,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .config import save_config
 from .glass import DragBar
 from .ocr_engine import OcrEngine, qimage_to_bgr
 from .translator import Translator, TranslatorError
@@ -99,7 +113,13 @@ class _LensWorker(QThread):
                 if not dst or dst == line.text:
                     continue  # 纯符号/未翻译的行不动，保留原文
                 bg, fg = _sample_colors(bgr, line.box)
-                items.append({"rect": _box_to_rect(line.box, self._dpr), "dst": dst, "bg": bg, "fg": fg})
+                items.append({
+                    "rect": _box_to_rect(line.box, self._dpr),
+                    "src": line.text,
+                    "dst": dst,
+                    "bg": bg,
+                    "fg": fg,
+                })
             self.succeeded.emit(self._run_id, {"items": items, "elapsed": time.perf_counter() - t0})
         except TranslatorError as exc:
             self.failed.emit(self._run_id, str(exc))
@@ -108,9 +128,13 @@ class _LensWorker(QThread):
 
 
 class _LensCanvas(QWidget):
-    """先画截取的快照，再把译文按原位重绘；未刷新时完全透明，可透视定位。"""
+    """先画截取的快照；悬停模式浮出对照气泡，替换模式原位重绘译文。"""
 
     doubleClicked = Signal()
+    lineCopied = Signal(str)
+
+    MODE_HOVER = "hover"
+    MODE_REPLACE = "replace"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -118,21 +142,45 @@ class _LensCanvas(QWidget):
         self._dpr = 1.0
         self._items: list[dict] = []
         self._font = QFont("Microsoft YaHei UI")
+        self._mode = self.MODE_HOVER
+        self._hover_index: int | None = None
+        self._tip_progress = 0.0
+        self._tip_anim = QVariantAnimation(self)
+        self._tip_anim.setDuration(140)
+        self._tip_anim.setStartValue(0.0)
+        self._tip_anim.setEndValue(1.0)
+        self._tip_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._tip_anim.valueChanged.connect(self._on_tip_anim)
+        self.setMouseTracking(True)
+
+    # ---- 数据 ----
+    def set_mode(self, mode: str):
+        if mode in (self.MODE_HOVER, self.MODE_REPLACE) and mode != self._mode:
+            self._mode = mode
+            self._clear_hover()
+            self.update()
+
+    @property
+    def mode(self) -> str:
+        return self._mode
 
     def set_content(self, bg: QImage | None, dpr: float, items: list[dict]):
         self._bg = bg
         self._dpr = dpr
         self._items = list(items)
+        self._clear_hover()
         self.update()
 
     def clear(self):
         self._bg = None
         self._items = []
+        self._clear_hover()
         self.update()
 
     def has_snapshot(self) -> bool:
         return self._bg is not None
 
+    # ---- 绘制 ----
     def paintEvent(self, event):
         p = QPainter(self)
         clip = QPainterPath()
@@ -145,8 +193,11 @@ class _LensCanvas(QWidget):
             img = QImage(self._bg)
             img.setDevicePixelRatio(self._dpr)
             p.drawImage(0, 0, img)
-        for item in self._items:
-            self._draw_replacement(p, item)
+        if self._mode == self.MODE_REPLACE:
+            for item in self._items:
+                self._draw_replacement(p, item)
+        elif self._hover_index is not None and self._hover_index < len(self._items):
+            self._draw_hover(p, self._items[self._hover_index])
         p.end()
 
     def _draw_replacement(self, p: QPainter, item: dict):
@@ -174,9 +225,108 @@ class _LensCanvas(QWidget):
         p.setPen(item["fg"])
         p.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, text)
 
+    def _draw_hover(self, p: QPainter, item: dict):
+        rect: QRectF = item["rect"]
+        progress = max(self._tip_progress, 0.0)
+
+        # 高亮当前块（即时出现，不等动画）
+        p.setPen(QPen(QColor(126, 179, 255, 170), 1.4))
+        p.setBrush(QColor(126, 179, 255, 26))
+        p.drawRoundedRect(rect.adjusted(-2, -2, 2, 2), 4, 4)
+        p.setBrush(Qt.NoBrush)
+
+        w, h = float(self.width()), float(self.height())
+        main_size = max(12.0, min(rect.height() * 0.9, 18.0))
+        main_font = QFont(self._font)
+        main_font.setPixelSize(int(main_size))
+        src_font = QFont(self._font)
+        src_font.setPixelSize(max(9, int(main_size * 0.72)))
+        fm_main = QFontMetricsF(main_font)
+        fm_src = QFontMetricsF(src_font)
+
+        tip_w = min(max(rect.width() * 1.5, 230.0), w - 16.0)
+        inner_w = tip_w - 18.0
+        dst_rect = fm_main.boundingRect(QRectF(0, 0, inner_w, 10000.0), Qt.TextWordWrap, item["dst"])
+        src_text = fm_src.elidedText(item.get("src", ""), Qt.ElideRight, inner_w)
+        content_h = dst_rect.height() + 4.0
+        if src_text:
+            content_h += fm_src.height() + 2.0
+        tip_h = content_h + 14.0
+
+        x = max(6.0, min(rect.left() - 6.0, w - tip_w - 6.0))
+        below = True
+        y = rect.bottom() + 8.0
+        if y + tip_h > h - 6.0:  # 下方放不下就浮到上方
+            y = rect.top() - 8.0 - tip_h
+            below = False
+        y = max(6.0, min(y, max(6.0, h - tip_h - 6.0)))
+        dy = (1.0 - progress) * (5.0 if below else -5.0)  # 从块的一侧滑入
+        panel = QRectF(x, y + dy, tip_w, tip_h)
+
+        p.setOpacity(progress)
+        p.setPen(QPen(QColor(126, 179, 255, 130), 1))
+        p.setBrush(QColor(15, 17, 24, 240))
+        p.drawRoundedRect(panel, 8, 8)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(126, 179, 255, 180))
+        p.drawRoundedRect(QRectF(panel.left() + 5, panel.top() + 6, 3, tip_h - 12), 1.5, 1.5)
+
+        ty = panel.top() + 7.0
+        if src_text:
+            p.setFont(src_font)
+            p.setPen(QColor(234, 240, 255, 150))
+            p.drawText(QRectF(panel.left() + 14, ty, inner_w, fm_src.height()),
+                       Qt.AlignLeft | Qt.AlignVCenter, src_text)
+            ty += fm_src.height() + 2.0
+        p.setFont(main_font)
+        p.setPen(QColor("#F2F6FF"))
+        p.drawText(QRectF(panel.left() + 14, ty, inner_w, dst_rect.height() + 4.0),
+                   Qt.AlignLeft | Qt.TextWordWrap, item["dst"])
+        p.setOpacity(1.0)
+
+    # ---- 悬停交互 ----
+    def mouseMoveEvent(self, e):
+        if self._mode == self.MODE_HOVER and self._items:
+            pos = e.position()
+            idx = None
+            for i in range(len(self._items) - 1, -1, -1):
+                if self._items[i]["rect"].adjusted(-3, -3, 3, 3).contains(pos):
+                    idx = i
+                    break
+            if idx != self._hover_index:
+                self._hover_index = idx
+                if idx is not None:
+                    self._tip_anim.stop()
+                    self._tip_progress = 0.0
+                    self._tip_anim.start()
+                else:
+                    self._tip_progress = 0.0
+                self.update()
+        super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._clear_hover()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and self._mode == self.MODE_HOVER and self._hover_index is not None:
+            self.lineCopied.emit(self._items[self._hover_index]["dst"])
+        super().mousePressEvent(e)
+
     def mouseDoubleClickEvent(self, e):
         self.doubleClicked.emit()
         super().mouseDoubleClickEvent(e)
+
+    def _clear_hover(self):
+        if self._hover_index is not None or self._tip_progress:
+            self._hover_index = None
+            self._tip_anim.stop()
+            self._tip_progress = 0.0
+            self.update()
+
+    def _on_tip_anim(self, value):
+        self._tip_progress = float(value)
+        self.update()
 
 
 class LensWindow(QWidget):
@@ -192,10 +342,10 @@ class LensWindow(QWidget):
         self._run_id = 0
         self._worker: _LensWorker | None = None
         self._items: list[dict] = []
-        self._saved_items: list[dict] | None = None
         self._snapshot: QImage | None = None
         self._snapshot_dpr = 1.0
         self._last_status = ""
+        self._flash_text = ""
         self._sized_once = False
 
         root = QVBoxLayout(self)
@@ -218,6 +368,8 @@ class LensWindow(QWidget):
         self.status = QLabel("", objectName="panelStatus")
         tlay.addWidget(self.title)
         tlay.addWidget(self.status, 1)
+        self.btn_mode = QPushButton("悬停")
+        self.btn_mode.setToolTip("切换显示模式：悬停对照（默认）/ 全部原位替换；双击画布也可切换")
         self.btn_refresh = QPushButton("↻ 刷新")
         self.btn_refresh.setToolTip("重新截取浮窗覆盖的区域并翻译（移动/调整大小后按）")
         self.btn_copy = QPushButton("⧉")
@@ -226,15 +378,16 @@ class LensWindow(QWidget):
         self.btn_close = QPushButton("✕")
         self.btn_close.setFixedWidth(34)
         self.btn_close.setToolTip("关闭（重新唤出按 Ctrl+Alt+T）")
-        for b in (self.btn_refresh, self.btn_copy, self.btn_close):
+        for b in (self.btn_mode, self.btn_refresh, self.btn_copy, self.btn_close):
             tlay.addWidget(b)
+        self.btn_mode.clicked.connect(self._toggle_mode)
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_copy.clicked.connect(self._copy)
         self.btn_close.clicked.connect(self.close)
         lay.addWidget(toolbar)
 
         self.canvas = _LensCanvas()
-        self.canvas.setToolTip("双击：隐藏/恢复译文，对照原文")
+        self.canvas.setToolTip("悬停：移到句子上看译文，单击复制该行；双击：切换悬停/替换模式")
         lay.addWidget(self.canvas, 1)
         root.addWidget(self.card)
 
@@ -248,7 +401,9 @@ class LensWindow(QWidget):
         shadow.setColor(QColor(0, 0, 0, 150))
         self.card.setGraphicsEffect(shadow)
 
-        self.canvas.doubleClicked.connect(self._toggle_original)
+        self.canvas.doubleClicked.connect(self._toggle_mode)
+        self.canvas.lineCopied.connect(self._on_line_copied)
+        self._apply_mode(str(cfg.get("lens_mode", "hover")), save=False)
 
     # ---- 唤出 / 刷新 ----
     def summon_at_cursor(self):
@@ -299,7 +454,6 @@ class LensWindow(QWidget):
         run_id = self._run_id
         self._snapshot = crop
         self._snapshot_dpr = dpr
-        self._saved_items = None
         self._items = []
         self.canvas.set_content(crop, dpr, [])  # 先显示原样快照
         self._set_status("⏳ 识别翻译中…")
@@ -330,8 +484,9 @@ class LensWindow(QWidget):
         n = len(self._items)
         if n == 0:
             self._set_status("未识别到文字 · 移动浮窗后按 ↻", remember=True)
-        else:
-            self._set_status(f"{n} 处 · {self._cfg.get('model')} · {result['elapsed']:.1f}s", remember=True)
+            return
+        mode_tip = "悬停对照 · " if self.canvas.mode == "hover" else ""
+        self._set_status(f"{n} 处 · {mode_tip}{self._cfg.get('model')} · {result['elapsed']:.1f}s", remember=True)
 
     def _on_failed(self, run_id: int, error: str):
         if run_id != self._run_id:
@@ -339,19 +494,21 @@ class LensWindow(QWidget):
         hint = "（托盘右键 → 设置检查 API Key）" if ("401" in error or "token" in error.lower()) else ""
         self._set_status("⚠ " + error[:220] + hint, "panelError")
 
-    def _toggle_original(self):
-        if self._snapshot is None:
-            return
-        if self._items:
-            self._saved_items = self._items
-            self._items = []
-            self.canvas.set_content(self._snapshot, self._snapshot_dpr, [])
-            self._set_status("已隐藏译文 · 双击恢复")
-        elif self._saved_items:
-            self._items = self._saved_items
-            self._saved_items = None
-            self.canvas.set_content(self._snapshot, self._snapshot_dpr, self._items)
-            self._set_status(self._last_status or "")
+    # ---- 模式 ----
+    def _apply_mode(self, mode: str, save: bool = True):
+        self.canvas.set_mode(mode)
+        self.btn_mode.setText("悬停" if mode == "hover" else "替换")
+        if save:
+            self._cfg["lens_mode"] = mode
+            save_config(self._cfg)
+
+    def _toggle_mode(self):
+        if self.canvas.mode == "hover":
+            self._apply_mode("replace")
+            self._set_status("替换模式 · 译文已原位覆盖，双击画布切回", remember=True)
+        else:
+            self._apply_mode("hover")
+            self._set_status("悬停模式 · 鼠标移到句子上浮现译文，单击复制该行", remember=True)
 
     # ---- 移动/缩放后使快照失效，恢复透视 ----
     def _invalidate_snapshot(self, message: str):
@@ -361,7 +518,6 @@ class LensWindow(QWidget):
         if self.canvas.has_snapshot() or self._items:
             self._snapshot = None
             self._items = []
-            self._saved_items = None
             self.canvas.clear()
             self._set_status(message)
 
@@ -375,18 +531,26 @@ class LensWindow(QWidget):
         self._grip.raise_()
         self._invalidate_snapshot("已调整大小 · 按 ↻ 重新翻译")
 
-    # ---- 杂项 ----
+    # ---- 复制 ----
     def _copy(self):
         text = "\n".join(i["dst"] for i in self._items)
         if text:
-            QGuiApplication.clipboard().setText(text)
-            self._set_status("已复制 ✓")
-            QTimer.singleShot(1400, self._restore_status)
+            self._flash("已复制全部译文 ✓")
+
+    def _on_line_copied(self, text: str):
+        QGuiApplication.clipboard().setText(text)
+        self._flash("已复制该行 ✓")
+
+    def _flash(self, text: str):
+        self._flash_text = text
+        self._set_status(text)
+        QTimer.singleShot(1400, self._restore_status)
 
     def _restore_status(self):
-        if self.status.text() == "已复制 ✓":
+        if self._flash_text and self.status.text() == self._flash_text:
             self._set_status(self._last_status or "")
 
+    # ---- 杂项 ----
     def _set_status(self, text: str, object_name: str = "panelStatus", remember: bool = False):
         if remember:
             self._last_status = text

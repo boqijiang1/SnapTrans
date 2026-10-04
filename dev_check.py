@@ -86,27 +86,36 @@ def check_widgets():
 
     lens = LensWindow(OcrEngine(), Translator({"api_key": "x"}), {"model": "glm-4-flash"})
     lens.resize(460, 240)
-    lens.canvas.set_content(
-        bg,
-        1.0,
-        [
-            {
-                "rect": QRectF(20, 12, 260, 28),
-                "dst": "复制    设置    导出",
-                "bg": QColor("#1E222C"),
-                "fg": QColor("#F2F6FF"),
-            },
-            {
-                "rect": QRectF(20, 60, 420, 24),
-                "dst": "这个插件提供 AI 驱动的翻译功能。",
-                "bg": QColor("#1E222C"),
-                "fg": QColor("#F2F6FF"),
-            },
-        ],
-    )
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dev_lens.png")
-    lens.grab().save(out)
-    print("[ok] lens rendered -> dev_lens.png")
+    items = [
+        {
+            "rect": QRectF(20, 12, 260, 28),
+            "src": "Copy    Settings    Export",
+            "dst": "复制    设置    导出",
+            "bg": QColor("#1E222C"),
+            "fg": QColor("#F2F6FF"),
+        },
+        {
+            "rect": QRectF(20, 60, 420, 24),
+            "src": "This plugin provides AI powered translation for your documents.",
+            "dst": "这个插件为你的文档提供 AI 驱动的翻译功能。",
+            "bg": QColor("#1E222C"),
+            "fg": QColor("#F2F6FF"),
+        },
+    ]
+    out_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 替换模式：全部原位覆盖
+    lens.canvas.set_mode("replace")
+    lens.canvas.set_content(bg, 1.0, items)
+    lens.grab().save(os.path.join(out_dir, "dev_lens_replace.png"))
+
+    # 悬停模式：原文可见，模拟鼠标停在第 2 块上、动画播完的状态
+    lens.canvas.set_mode("hover")
+    lens.canvas.set_content(bg, 1.0, items)
+    lens.canvas._hover_index = 1
+    lens.canvas._tip_progress = 1.0
+    lens.grab().save(os.path.join(out_dir, "dev_lens_hover.png"))
+    print("[ok] lens rendered -> dev_lens_replace.png / dev_lens_hover.png")
 
 
 if __name__ == "__main__":
