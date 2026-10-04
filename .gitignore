@@ -1,0 +1,10 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 含 API Key，绝不入库
+config.json
+
+# 开发自检产物
+dev_*.png

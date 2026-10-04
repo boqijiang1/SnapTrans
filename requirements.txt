@@ -1,0 +1,3 @@
+PySide6>=6.6
+rapidocr-onnxruntime>=1.3.24
+requests>=2.31
