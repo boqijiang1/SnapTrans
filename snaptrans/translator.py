@@ -1,10 +1,11 @@
-"""GLM 翻译客户端（智谱开放平台 OpenAI 兼容接口）：编号协议 + 行级缓存 + 术语表。"""
+"""GLM 翻译客户端（智谱开放平台 OpenAI 兼容接口）：编号协议 + 行级缓存 + 术语表 + 并行分块。"""
 
 from __future__ import annotations
 
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -102,16 +103,23 @@ class Translator:
         return SYSTEM_PROMPT + f"\n\n术语表（遇到下列词语必须严格按此翻译）：\n{lines}"
 
     def translate_lines(self, texts: list[str]) -> list[str]:
-        """逐行翻译，保持行数与顺序；纯符号行原样返回。"""
+        """逐行翻译，保持行数与顺序；纯符号行原样返回。行数多时分块并行请求。"""
         unique: list[str] = []
         seen: set[str] = set()
         for t in texts:
             if is_translatable(t) and t not in self._cache and t not in seen:
                 seen.add(t)
                 unique.append(t)
-        for chunk_start in range(0, len(unique), self.BATCH):
-            chunk = unique[chunk_start : chunk_start + self.BATCH]
-            for src, dst in zip(chunk, self._request_batch(chunk)):
+        chunks = [unique[i : i + self.BATCH] for i in range(0, len(unique), self.BATCH)]
+        if not chunks:
+            return [t if not is_translatable(t) else self._cache.get(t, t) for t in texts]
+        if len(chunks) == 1:
+            batch_results = [self._request_batch(chunks[0])]
+        else:  # 多块并行，整段文本的等待时间近似减半
+            with ThreadPoolExecutor(max_workers=min(3, len(chunks))) as pool:
+                batch_results = list(pool.map(self._request_batch, chunks))
+        for chunk, translated in zip(chunks, batch_results):
+            for src, dst in zip(chunk, translated):
                 self._cache[src] = dst
                 if len(self._cache) > self.CACHE_MAX:
                     self._cache.pop(next(iter(self._cache)))

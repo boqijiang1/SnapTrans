@@ -29,6 +29,10 @@
 
 项目目录的 `glossary.txt`：每行一条「英文 = 中文」（也支持 `->` 或 Tab），保存**立即生效**，翻译时强制按词表翻译——专有名词全篇一致。托盘"打开术语表"可随时编辑。
 
+## 译文字体
+
+译文字体默认尝试「ItijyouRaurafont（壹城劳拉手写体）」：把字体文件（.ttf/.otf/.ttc）放进项目目录的 **`fonts/`** 文件夹（exe 模式放在 exe 旁边），或将字体安装到系统，即可自动生效；都找不到时回退微软雅黑。也可在 config.json 的 `font_family` 填其他已安装字体名。字号为**全区域统一**（按文本块高度中位数推导，12~28px 自适应），悬停气泡同款字体。
+
 ## 配置（config.json）
 
 ```json
@@ -38,6 +42,7 @@
   "hotkey": "ctrl+alt+t",
   "hotkey_clipboard": "ctrl+alt+b",
   "lens_mode": "hover",
+  "font_family": "ItijyouRaurafont",
   "auto_translate": true,
   "follow_content": true,
   "poll_interval_ms": 1500,

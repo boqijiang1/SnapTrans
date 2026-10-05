@@ -70,6 +70,46 @@ class DragBar(QWidget):
         super().mouseReleaseEvent(e)
 
 
+def resolve_font_family(preferred: str) -> str:
+    """解析译文字体：先加载 fonts/ 目录的字体文件，再按名字找系统字体族，
+    大小写/空格差异做模糊匹配；都找不到回退微软雅黑。"""
+    from PySide6.QtGui import QFontDatabase
+
+    from .config import FONTS_DIR
+
+    loaded: list[str] = []
+    try:
+        if FONTS_DIR.exists():
+            for p in sorted(FONTS_DIR.iterdir()):
+                if p.suffix.lower() in (".ttf", ".otf", ".ttc"):
+                    fid = QFontDatabase.addApplicationFont(str(p))
+                    if fid >= 0:
+                        loaded.extend(QFontDatabase.applicationFontFamilies(fid))
+    except OSError:
+        pass
+
+    def norm(s: str) -> str:
+        import re
+
+        return re.sub(r"[\s_\-]", "", s).lower()
+
+    families = set(QFontDatabase.families())
+    wanted = [preferred, *loaded] if preferred else list(loaded)
+    for cand in wanted:
+        if cand in families:
+            return cand
+    pn = norm(preferred) if preferred else ""
+    if pn:
+        for fam in families:
+            if norm(fam) == pn:
+                return fam
+    for cand in wanted:
+        for fam in families:
+            if cand and norm(fam) == norm(cand):
+                return fam
+    return "Microsoft YaHei UI"
+
+
 QSS = """
 * { font-family: 'Microsoft YaHei UI', 'Microsoft YaHei'; color: #EAF0FF; }
 QFrame#glassCard {

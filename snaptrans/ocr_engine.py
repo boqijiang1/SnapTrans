@@ -50,6 +50,11 @@ class OcrEngine:
 
         self.preload()
         img = image_bgr
+        h, w = img.shape[:2]
+        scale = 1.0
+        if max(h, w) > 1400:  # 大区域先降采样：OCR 明显提速，坐标按比例还原
+            scale = max(h, w) / 1400.0
+            img = cv2.resize(img, (round(w / scale), round(h / scale)), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         if int(gray.mean()) < self._invert_threshold:  # 深色主题：反色后识别更稳
             img = cv2.bitwise_not(img)
@@ -58,7 +63,8 @@ class OcrEngine:
         for item in raw or []:
             text = str(item[1]).strip()
             if text:
-                lines.append(OcrLine(text, np.asarray(item[0], dtype=np.float64), float(item[2])))
+                box = np.asarray(item[0], dtype=np.float64) * scale
+                lines.append(OcrLine(text, box, float(item[2])))
         return _reading_order(lines)
 
 

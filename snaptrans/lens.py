@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 
 from . import log
 from .config import save_config
-from .glass import DragBar
+from .glass import DragBar, resolve_font_family
 from .ocr_engine import OcrEngine, qimage_to_bgr
 from .translator import Translator, TranslatorError
 
@@ -139,6 +139,7 @@ class _LensCanvas(QWidget):
         super().__init__(parent)
         self._items: list[dict] = []
         self._font = QFont("Microsoft YaHei UI")
+        self._base_size = 16.0  # 全区域统一字号（由各文本块高度中位数推导）
         self._mode = self.MODE_HOVER
         self._hover_index: int | None = None
         self._tip_progress = 0.0
@@ -161,8 +162,15 @@ class _LensCanvas(QWidget):
     def mode(self) -> str:
         return self._mode
 
+    def set_font_family(self, family: str):
+        self._font = QFont(family or "Microsoft YaHei UI")
+
     def set_items(self, items: list[dict]):
         self._items = list(items)
+        if self._items:  # 统一字号：所有行同一档，观感一致
+            heights = sorted(it["rect"].height() for it in self._items)
+            base = float(np.median(heights)) * 0.85
+            self._base_size = max(12.0, min(base, 28.0))
         self._clear_hover()
         self.update()
 
@@ -199,26 +207,32 @@ class _LensCanvas(QWidget):
         rect: QRectF = item["rect"]
         if rect.right() < 0 or rect.bottom() < 0 or rect.x() > self.width() or rect.y() > self.height():
             return
-        # 用采样的背景色盖住原文，再把译文画回原位：位置、字号、配色与原文一致
-        p.setPen(Qt.NoPen)
-        p.setBrush(item["bg"])
-        p.drawRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), 2, 2)
-
         text: str = item["dst"]
-        size = max(9.0, min(rect.height() * 0.88, 60.0))
+        # 统一字号：全区域一行一个大小；仅当译文远宽于原文框时才缩小这一行
+        size = float(self._base_size)
         font = QFont(self._font)
         fm = None
-        for _ in range(60):  # 中文比原文行还宽时逐级缩小，保持不溢出原排版
+        for _ in range(60):
             font.setPixelSize(int(size))
             fm = QFontMetricsF(font)
-            if fm.horizontalAdvance(text) <= rect.width() or size <= 8.0:
+            if fm.horizontalAdvance(text) <= rect.width() * 1.25 or size <= 10.0:
                 break
             size -= 1.0
         if fm is None:
             return
+
+        # 背景遮罩随译文加宽，盖住原文且不糊到画布外
+        advance = fm.horizontalAdvance(text)
+        mask_w = min(max(rect.width(), advance + 4.0), self.width() - rect.x() - 1.0)
+        p.setPen(Qt.NoPen)
+        p.setBrush(item["bg"])
+        p.drawRoundedRect(
+            QRectF(rect.x() - 1.5, rect.y() - 1.5, max(mask_w + 3.0, 4.0), rect.height() + 3.0), 2, 2
+        )
         p.setFont(font)
         p.setPen(item["fg"])
-        p.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+        p.drawText(QRectF(rect.x(), rect.y(), mask_w, rect.height()),
+                   Qt.AlignLeft | Qt.AlignVCenter, text)
 
     def _draw_hover(self, p: QPainter, item: dict):
         rect: QRectF = item["rect"]
@@ -231,7 +245,8 @@ class _LensCanvas(QWidget):
         p.setBrush(Qt.NoBrush)
 
         w, h = float(self.width()), float(self.height())
-        main_size = max(12.0, min(rect.height() * 0.9, 18.0))
+        base = float(self._base_size)
+        main_size = max(12.0, min(base, 18.0))
         main_font = QFont(self._font)
         main_font.setPixelSize(int(main_size))
         src_font = QFont(self._font)
@@ -345,7 +360,7 @@ class LensWindow(QWidget):
         self._captured_geometry: QRect | None = None
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
-        self._auto_timer.setInterval(450)  # 移动停稳 450ms 后自动翻译
+        self._auto_timer.setInterval(350)  # 移动停稳 350ms 后自动翻译
         self._auto_timer.timeout.connect(self._auto_refresh)
 
         # 跟随内容变化：浮窗不动、底下内容变了就自动重翻
@@ -414,6 +429,7 @@ class LensWindow(QWidget):
         self.canvas.doubleClicked.connect(self._toggle_mode)
         self.canvas.lineCopied.connect(self._on_line_copied)
         self._apply_mode(str(cfg.get("lens_mode", "hover")), save=False)
+        self.canvas.set_font_family(resolve_font_family(str(cfg.get("font_family", ""))))
 
     # ---- 唤出 ----
     def summon_at_cursor(self):

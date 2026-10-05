@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import log
-from .glass import DragBar, enable_acrylic
+from .glass import DragBar, enable_acrylic, resolve_font_family
 from .translator import Translator, TranslatorError
 
 
@@ -122,6 +122,10 @@ class ClipboardBubble(QWidget):
         self.card.setGraphicsEffect(shadow)
 
         self.setFixedWidth(self.WIDTH)
+
+        family = resolve_font_family(str(cfg.get("font_family", "")))
+        self.orig.setStyleSheet(f"font-family: \"{family}\"; font-size: 9pt;")
+        self.trans.setStyleSheet(f"font-family: \"{family}\"; font-size: 12pt;")
 
     # ---- 唤出 ----
     def summon(self, text: str):
