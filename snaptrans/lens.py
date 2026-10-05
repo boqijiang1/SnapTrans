@@ -170,8 +170,23 @@ class _LensCanvas(QWidget):
             heights = sorted(it["rect"].height() for it in self._items)
             base = float(np.median(heights)) * 0.85
             self._base_size = max(12.0, min(base, 28.0))
-        self._clear_hover()
+        self._hover_index = None
+        self._tip_progress = 0.0
+        # 光标已经悬在某句上时立即浮出气泡——否则翻译完成后不移动鼠标就永远不触发
+        if self._items and self._mode == self.MODE_HOVER:
+            idx = self._hit_test(self.mapFromGlobal(QCursor.pos()))
+            if idx is not None:
+                self._hover_index = idx
+                self._tip_anim.stop()
+                self._tip_progress = 0.0
+                self._tip_anim.start()
         self.update()
+
+    def _hit_test(self, pos) -> int | None:
+        for i in range(len(self._items) - 1, -1, -1):
+            if self._items[i]["rect"].adjusted(-5, -5, 5, 5).contains(pos):
+                return i
+        return None
 
     def clear(self):
         self._items = []
@@ -195,11 +210,16 @@ class _LensCanvas(QWidget):
         p.setClipPath(clip)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
-        if self._mode == self.MODE_REPLACE:
+        if self._mode == self.MODE_HOVER:
+            # 隐形命中区：alpha≈1/255 人眼不可见，但让系统鼠标命中测试覆盖句子
+            # （否则全透明画布的像素会被 Windows 判为穿透，悬停永远收不到事件）
+            for it in self._items:
+                p.fillRect(it["rect"].adjusted(-5, -5, 5, 5), QColor(0, 0, 0, 2))
+            if self._hover_index is not None and self._hover_index < len(self._items):
+                self._draw_hover(p, self._items[self._hover_index])
+        else:
             for item in self._items:
                 self._draw_replacement(p, item)
-        elif self._hover_index is not None and self._hover_index < len(self._items):
-            self._draw_hover(p, self._items[self._hover_index])
         p.end()
 
     def _draw_replacement(self, p: QPainter, item: dict):
@@ -297,12 +317,7 @@ class _LensCanvas(QWidget):
     # ---- 悬停交互 ----
     def mouseMoveEvent(self, e):
         if self._mode == self.MODE_HOVER and self._items:
-            pos = e.position()
-            idx = None
-            for i in range(len(self._items) - 1, -1, -1):
-                if self._items[i]["rect"].adjusted(-3, -3, 3, 3).contains(pos):
-                    idx = i
-                    break
+            idx = self._hit_test(e.position())
             if idx != self._hover_index:
                 self._hover_index = idx
                 if idx is not None:
@@ -419,9 +434,9 @@ class LensWindow(QWidget):
         self._grip.setToolTip("拖拽调整大小")
 
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(30)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 70))
         self.card.setGraphicsEffect(shadow)
 
         self.canvas.doubleClicked.connect(self._toggle_mode)

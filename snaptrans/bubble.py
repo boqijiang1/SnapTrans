@@ -116,9 +116,9 @@ class ClipboardBubble(QWidget):
         root.addWidget(self.card)
 
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(28)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 140))
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 70))
         self.card.setGraphicsEffect(shadow)
 
         self.setFixedWidth(self.WIDTH)

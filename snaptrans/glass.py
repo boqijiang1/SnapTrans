@@ -87,16 +87,15 @@ class GlassCard(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = float(self.width()), float(self.height())
-        outer = QRectF(0.75, 0.75, w - 1.5, h - 1.5)
+        outer = QRectF(0.5, 0.5, w - 1.5, h - 1.5)
         path = QPainterPath()
         path.addRoundedRect(outer, self._radius, self._radius)
 
         if self._variant == "solid":
             base = QLinearGradient(0, 0, 0, h)
-            base.setColorAt(0, QColor(36, 40, 56, 208))
-            base.setColorAt(1, QColor(13, 15, 23, 202))
+            base.setColorAt(0, QColor(34, 38, 54, 196))
+            base.setColorAt(1, QColor(13, 15, 23, 190))
             p.fillPath(path, base)
-            self._paint_sheen(p, path, h)
         else:
             rim = float(self._rim)
             inner_r = max(self._radius - rim, 6.0)
@@ -106,42 +105,44 @@ class GlassCard(QFrame):
             )
             frame = path.subtracted(viewport)
             base = QLinearGradient(0, 0, 0, h)
-            base.setColorAt(0, QColor(255, 255, 255, 84))
-            base.setColorAt(1, QColor(150, 170, 215, 46))
+            base.setColorAt(0, QColor(255, 255, 255, 64))
+            base.setColorAt(1, QColor(150, 170, 215, 34))
             p.fillPath(frame, base)
-            self._paint_sheen(p, frame, h)
-            # 视区内缘：暗线定深度，亮线给反光
-            p.setPen(QPen(QColor(0, 0, 0, 60), 1))
+            # 视区内缘：细暗线定深度，外圈细亮线给反光
+            p.setPen(QPen(QColor(0, 0, 0, 45), 1))
             p.setBrush(Qt.NoBrush)
             p.drawPath(viewport)
-            vp_out = QPainterPath()
-            vp_out.addRoundedRect(
-                QRectF(rim - 0.5, rim - 0.5, w - 2 * rim + 1, h - 2 * rim + 1),
-                inner_r + 1,
-                inner_r + 1,
-            )
-            p.setPen(QPen(QColor(255, 255, 255, 80), 1))
-            p.drawPath(vp_out)
 
-        # 高光描边：左上亮、右下暗，模拟顶部来光
-        border = QLinearGradient(0, 0, w, h)
-        border.setColorAt(0, QColor(255, 255, 255, 200))
-        border.setColorAt(0.45, QColor(255, 255, 255, 76))
-        border.setColorAt(1, QColor(255, 255, 255, 42))
-        p.setPen(QPen(QBrush(border), 1.5))
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(path)
-        p.end()
-
-    def _paint_sheen(self, p: QPainter, path: QPainterPath, h: float):
-        sheen = QLinearGradient(0, 0, 0, h * 0.55)
-        sheen.setColorAt(0, QColor(255, 255, 255, 58))
+        # 顶部光泽 + 斜向液态高光
+        sheen = QLinearGradient(0, 0, 0, h * 0.5)
+        sheen.setColorAt(0, QColor(255, 255, 255, 66))
         sheen.setColorAt(1, QColor(255, 255, 255, 0))
         p.fillPath(path, sheen)
-        diag = QLinearGradient(0, 0, h * 0.9, h)  # 斜向液态高光
-        diag.setColorAt(0, QColor(255, 255, 255, 30))
+        diag = QLinearGradient(0, 0, h * 0.9, h)
+        diag.setColorAt(0, QColor(255, 255, 255, 34))
         diag.setColorAt(0.5, QColor(255, 255, 255, 0))
         p.fillPath(path, diag)
+
+        # 细高光描边：1px、左上亮右下暗，保持轻盈
+        border = QLinearGradient(0, 0, w, h)
+        border.setColorAt(0, QColor(255, 255, 255, 170))
+        border.setColorAt(0.5, QColor(255, 255, 255, 60))
+        border.setColorAt(1, QColor(255, 255, 255, 30))
+        p.setPen(QPen(QBrush(border), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+        # 顶缘反光线：玻璃上边缘的"来光"，往下渐隐
+        inner_path = QPainterPath()
+        inner_path.addRoundedRect(
+            QRectF(2, 2, w - 4, h - 4), max(self._radius - 2, 8), max(self._radius - 2, 8)
+        )
+        edge = QLinearGradient(0, 0, 0, h * 0.45)
+        edge.setColorAt(0, QColor(255, 255, 255, 140))
+        edge.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setPen(QPen(QBrush(edge), 1.2))
+        p.drawPath(inner_path)
+        p.end()
 
 
 def resolve_font_family(preferred: str) -> str:
@@ -193,20 +194,20 @@ QLabel#panelBody { font-size: 12pt; background: transparent; }
 QLabel#fieldLabel { font-size: 10.5pt; color: rgba(240, 244, 255, 180); }
 QToolButton, QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(255, 255, 255, 70), stop:0.5 rgba(255, 255, 255, 34), stop:1 rgba(255, 255, 255, 16));
-    border: 1px solid rgba(255, 255, 255, 58);
+        stop:0 rgba(255, 255, 255, 58), stop:0.5 rgba(255, 255, 255, 28), stop:1 rgba(255, 255, 255, 12));
+    border: 1px solid rgba(255, 255, 255, 40);
     border-radius: 10px;
     padding: 4px 12px;
     font-size: 11pt;
 }
 QToolButton:hover, QPushButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(150, 190, 255, 95), stop:0.5 rgba(110, 160, 255, 55), stop:1 rgba(90, 130, 220, 35));
-    border: 1px solid rgba(170, 205, 255, 150);
+        stop:0 rgba(150, 190, 255, 85), stop:0.5 rgba(110, 160, 255, 48), stop:1 rgba(90, 130, 220, 28));
+    border: 1px solid rgba(170, 205, 255, 120);
 }
 QToolButton:pressed, QPushButton:pressed {
-    background: rgba(60, 80, 130, 110);
-    border: 1px solid rgba(140, 175, 255, 110);
+    background: rgba(60, 80, 130, 100);
+    border: 1px solid rgba(140, 175, 255, 95);
 }
 QPushButton#primary {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
