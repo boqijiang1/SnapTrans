@@ -11,5 +11,8 @@ build/
 # 含 API Key，绝不入库
 config.json
 
+# 本机数据
+history.json
+
 # 开发自检产物
 dev_*.png

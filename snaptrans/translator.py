@@ -1,7 +1,8 @@
-"""GLM 翻译客户端（智谱开放平台 OpenAI 兼容接口）：编号协议 + 行级缓存 + 术语表 + 并行分块。"""
+"""GLM 翻译客户端（智谱开放平台 OpenAI 兼容接口）：编号协议 + 行级缓存 + 术语表 + 流式输出。"""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -103,7 +104,7 @@ class Translator:
         return SYSTEM_PROMPT + f"\n\n术语表（遇到下列词语必须严格按此翻译）：\n{lines}"
 
     def translate_lines(self, texts: list[str]) -> list[str]:
-        """逐行翻译，保持行数与顺序；纯符号行原样返回。行数多时分块并行请求。"""
+        """非流式逐行翻译（一次性返回）。行数多时分块并行请求。"""
         unique: list[str] = []
         seen: set[str] = set()
         for t in texts:
@@ -115,7 +116,7 @@ class Translator:
             return [t if not is_translatable(t) else self._cache.get(t, t) for t in texts]
         if len(chunks) == 1:
             batch_results = [self._request_batch(chunks[0])]
-        else:  # 多块并行，整段文本的等待时间近似减半
+        else:
             with ThreadPoolExecutor(max_workers=min(3, len(chunks))) as pool:
                 batch_results = list(pool.map(self._request_batch, chunks))
         for chunk, translated in zip(chunks, batch_results):
@@ -124,6 +125,138 @@ class Translator:
                 if len(self._cache) > self.CACHE_MAX:
                     self._cache.pop(next(iter(self._cache)))
         return [t if not is_translatable(t) else self._cache.get(t, t) for t in texts]
+
+    def translate_lines_streaming(self, texts: list[str], on_line) -> list[str]:
+        """流式逐行翻译。on_line(text_index, translated) 会随进度多次调用：
+        缓存命中与纯符号行立即回调，其余行在流式响应中每完成一行就回调一次。
+        返回完整译文列表（与 translate_lines 一致），并写入缓存。"""
+        results: list[str | None] = [None] * len(texts)
+        pending: dict[str, list[int]] = {}
+        for i, t in enumerate(texts):
+            if not is_translatable(t):
+                results[i] = t
+                on_line(i, t)
+            elif t in self._cache:
+                results[i] = self._cache[t]
+                on_line(i, self._cache[t])
+            else:
+                pending.setdefault(t, []).append(i)
+
+        unique = list(pending.keys())
+        chunks = [unique[i : i + self.BATCH] for i in range(0, len(unique), self.BATCH)]
+        for chunk in chunks:
+            index_lists = [pending[t] for t in chunk]
+            self._request_batch_streaming(chunk, index_lists, results, on_line)
+
+        for i, t in enumerate(texts):
+            if results[i] is None:
+                results[i] = self._cache.get(t, t)
+                on_line(i, results[i])
+        return results
+
+    def _request_batch_streaming(self, lines: list[str], index_lists: list[list[int]],
+                                 results: list, on_line) -> None:
+        """流式请求一批编号行，每解析出一行立即回调。结束后做整段解析兜底。"""
+        prompt = "\n".join(f"{k + 1}. {t}" for k, t in enumerate(lines))
+        url = self.cfg["api_base"].rstrip("/") + "/chat/completions"
+        headers = {"Authorization": f"Bearer {self.cfg.get('api_key', '').strip()}"}
+        payload = {
+            "model": self.cfg.get("model", "glm-4-flash"),
+            "messages": [
+                {"role": "system", "content": self._system_prompt()},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "stream": True,
+        }
+        last_err = ""
+        for _attempt in range(2):
+            try:
+                with requests.post(url, headers=headers, json=payload,
+                                   timeout=(10, 120), stream=True) as resp:
+                    if resp.status_code != 200:
+                        try:
+                            msg = resp.json().get("error", {}).get("message") or resp.text[:300]
+                        except ValueError:
+                            msg = resp.text[:300]
+                        last_err = f"HTTP {resp.status_code}: {msg}"
+                        if resp.status_code in (429, 500, 502, 503, 504):
+                            time.sleep(1.2)
+                            continue
+                        raise TranslatorError(last_err)
+
+                    content_parts: list[str] = []
+                    emitted: set[int] = set()
+                    buf = ""
+                    for raw in resp.iter_lines(decode_unicode=True):
+                        if not raw or not raw.startswith("data:"):
+                            continue
+                        data = raw[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            delta = json.loads(data)["choices"][0]["delta"].get("content") or ""
+                        except (ValueError, KeyError, IndexError):
+                            continue
+                        content_parts.append(delta)
+                        buf += delta
+                        while "\n" in buf:
+                            done_line, buf = buf.split("\n", 1)
+                            self._emit_stream_line(done_line, lines, index_lists, emitted, results, on_line)
+                    self._emit_stream_line(buf, lines, index_lists, emitted, results, on_line)
+
+                    # 兜底：流式解析漏掉的行走整段解析补齐
+                    missing = [k for k in range(len(lines)) if k not in emitted]
+                    if not missing:
+                        return
+                    try:
+                        parsed = _parse_reply("".join(content_parts), len(lines))
+                    except TranslatorError:
+                        parsed = None
+                    if parsed:
+                        for k in missing:
+                            dst = parsed[k]
+                            if not dst:
+                                continue
+                            emitted.add(k)
+                            self._cache[lines[k]] = dst
+                            for i in index_lists[k]:
+                                results[i] = dst
+                                on_line(i, dst)
+                        return
+                    # 仍然缺失：对缺失部分做一次非流式重试
+                    retry_lines = [lines[k] for k in missing]
+                    retry_idx = [index_lists[k] for k in missing]
+                    for src, idxs, dst in zip(retry_lines, retry_idx, self._request_batch(retry_lines)):
+                        self._cache[src] = dst
+                        for i in idxs:
+                            results[i] = dst
+                            on_line(i, dst)
+                    return
+            except requests.RequestException as exc:
+                last_err = f"网络错误: {exc}"
+                time.sleep(1.2)
+        raise TranslatorError(last_err)
+
+    def _emit_stream_line(self, line: str, lines: list[str], index_lists: list[list[int]],
+                          emitted: set[int], results: list, on_line) -> None:
+        """解析一行流式输出；是完整的编号译文行就回调并写缓存。"""
+        line = line.strip().strip("*").strip()
+        if not line:
+            return
+        m = _NUM_PREFIX.match(line)
+        if not m:
+            return
+        k = int(m.group(1)) - 1
+        dst = m.group(2).strip()
+        if not (0 <= k < len(lines)) or k in emitted or not dst:
+            return
+        emitted.add(k)
+        self._cache[lines[k]] = dst
+        for i in index_lists[k]:
+            results[i] = dst
+            on_line(i, dst)
 
     def _request_batch(self, lines: list[str]) -> list[str]:
         prompt = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(lines))

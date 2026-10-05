@@ -48,7 +48,7 @@ from . import log
 from .config import save_config
 from .glass import DragBar, GlassCard, resolve_font_family
 from .ocr_engine import OcrEngine, qimage_to_bgr
-from .translator import Translator, TranslatorError
+from .translator import Translator, TranslatorError, is_translatable
 
 TOOLBAR_H = 34
 DEFAULT_SIZE = QSize(460, 240)
@@ -83,7 +83,9 @@ def _sample_colors(bgr: np.ndarray, box) -> tuple[QColor, QColor]:
 
 class _LensWorker(QThread):
     stage = Signal(int, str)
-    succeeded = Signal(int, object)  # run_id, {"items": [...], "elapsed": float}
+    skeleton = Signal(int, object)      # run_id, 译文块骨架（dst 为空，坐标/配色已就绪）
+    line_ready = Signal(int, int, str)  # run_id, 块索引, 译文
+    succeeded = Signal(int, object)     # run_id, {"items": [...], "lines": int, "elapsed": float}
     failed = Signal(int, str)
 
     def __init__(self, run_id: int, crop, dpr: float, engine: OcrEngine,
@@ -102,23 +104,45 @@ class _LensWorker(QThread):
             bgr = qimage_to_bgr(self._crop)
             ocr_lines = self._engine.recognize(bgr)
             if not ocr_lines:
-                self.succeeded.emit(self._run_id, {"items": [], "elapsed": time.perf_counter() - t0})
+                self.succeeded.emit(self._run_id, {"items": [], "lines": 0, "elapsed": time.perf_counter() - t0})
                 return
-            self.stage.emit(self._run_id, f"翻译中…（{len(ocr_lines)} 行）")
-            translated = self._translator.translate_lines([l.text for l in ocr_lines])
-            items = []
-            for line, dst in zip(ocr_lines, translated):
-                if not dst or dst == line.text:
-                    continue  # 纯符号/未翻译的行不动，保留原文
+            texts = [l.text for l in ocr_lines]
+            # 先发骨架：坐标与配色就绪，译文随流式进度逐行填充
+            items: list[dict] = []
+            index_to_item: dict[int, int] = {}
+            for i, line in enumerate(ocr_lines):
+                if not is_translatable(line.text):
+                    continue  # 纯符号/数字不建块，保留原文
                 bg, fg = _sample_colors(bgr, line.box)
+                index_to_item[i] = len(items)
                 items.append({
                     "rect": _box_to_rect(line.box, self._dpr),
                     "src": line.text,
-                    "dst": dst,
+                    "dst": "",
                     "bg": bg,
                     "fg": fg,
                 })
-            self.succeeded.emit(self._run_id, {"items": items, "elapsed": time.perf_counter() - t0})
+            total = len(items)
+            self.skeleton.emit(self._run_id, items)
+            done = 0
+
+            def on_line(i: int, dst: str):
+                nonlocal done
+                ii = index_to_item.get(i)
+                if ii is None:
+                    return
+                if dst == texts[i]:  # 模型原样返回 → 视为未翻译，隐藏该块露出原文
+                    dst = ""
+                else:
+                    done += 1
+                items[ii]["dst"] = dst
+                self.line_ready.emit(self._run_id, ii, dst)
+                self.stage.emit(self._run_id, f"翻译中…（{done}/{total} 行）")
+
+            self._translator.translate_lines_streaming(texts, on_line)
+            elapsed = time.perf_counter() - t0
+            n = sum(1 for it in items if it["dst"])
+            self.succeeded.emit(self._run_id, {"items": items, "lines": n, "elapsed": elapsed})
         except TranslatorError as exc:
             self.failed.emit(self._run_id, str(exc))
         except Exception as exc:  # 任何意外都不允许弄崩主线程
@@ -165,7 +189,8 @@ class _LensCanvas(QWidget):
         self._font = QFont(family or "Microsoft YaHei UI")
 
     def set_items(self, items: list[dict]):
-        self._items = list(items)
+        # 与窗口共享同一列表：worker 的行级更新通过 update_item 直接生效
+        self._items = items
         if self._items:  # 统一字号：所有行同一档，观感一致
             heights = sorted(it["rect"].height() for it in self._items)
             base = float(np.median(heights)) * 0.85
@@ -182,9 +207,26 @@ class _LensCanvas(QWidget):
                 self._tip_anim.start()
         self.update()
 
+    def update_item(self, idx: int, dst: str):
+        """流式翻译的行级更新：填充一块译文并重绘；光标恰在其上时自动弹气泡。"""
+        if not (0 <= idx < len(self._items)):
+            return
+        self._items[idx]["dst"] = dst
+        if dst and self._hover_index is None and self._mode == self.MODE_HOVER:
+            idx2 = self._hit_test(self.mapFromGlobal(QCursor.pos()))
+            if idx2 == idx:
+                self._hover_index = idx
+                self._tip_anim.stop()
+                self._tip_progress = 0.0
+                self._tip_anim.start()
+        self.update()
+
     def _hit_test(self, pos) -> int | None:
         for i in range(len(self._items) - 1, -1, -1):
-            if self._items[i]["rect"].adjusted(-5, -5, 5, 5).contains(pos):
+            it = self._items[i]
+            if not it.get("dst"):
+                continue  # 译文尚未就位的块不参与悬停
+            if it["rect"].adjusted(-5, -5, 5, 5).contains(pos):
                 return i
         return None
 
@@ -227,6 +269,8 @@ class _LensCanvas(QWidget):
         if rect.right() < 0 or rect.bottom() < 0 or rect.x() > self.width() or rect.y() > self.height():
             return
         text: str = item["dst"]
+        if not text:
+            return  # 骨架块：译文未就位，露出原文
         # 统一字号：全区域一行一个大小；译文过宽（原文框 1.25 倍或超出画布）才缩小这一行
         size = float(self._base_size)
         font = QFont(self._font)
@@ -355,6 +399,8 @@ class _LensCanvas(QWidget):
 
 
 class LensWindow(QWidget):
+    translated = Signal(str, str)  # 原文全文, 译文全文（历史记录用）
+
     def __init__(self, engine: OcrEngine, translator: Translator, cfg: dict):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -485,6 +531,8 @@ class LensWindow(QWidget):
 
         worker = _LensWorker(run_id, crop, dpr, self._engine, self._translator, self)
         worker.stage.connect(self._on_stage)
+        worker.skeleton.connect(self._on_skeleton)
+        worker.line_ready.connect(self._on_line_ready)
         worker.succeeded.connect(self._on_succeeded)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(worker.deleteLater)
@@ -566,17 +614,31 @@ class LensWindow(QWidget):
         if run_id == self._run_id:
             self._set_status("⏳ " + message)
 
+    def _on_skeleton(self, run_id: int, items: list):
+        if run_id != self._run_id:
+            return
+        self._items = items  # 与画布共享同一列表，worker 的行级更新直接生效
+        self.canvas.set_items(items)
+
+    def _on_line_ready(self, run_id: int, item_idx: int, dst: str):
+        if run_id != self._run_id:
+            return
+        self.canvas.update_item(item_idx, dst)
+
     def _on_succeeded(self, run_id: int, result: dict):
         if run_id != self._run_id:
             return
         self._items = result["items"]
-        self.canvas.set_items(self._items)
-        n = len(self._items)
+        n = result.get("lines", 0)
         if n == 0:
             self._set_status("未识别到文字 · 移动浮窗后按 ↻", remember=True)
             return
         mode_tip = "悬停对照 · " if self.canvas.mode == "hover" else ""
         self._set_status(f"{n} 处 · {mode_tip}{self._cfg.get('model')} · {result['elapsed']:.1f}s", remember=True)
+        self.translated.emit(
+            "\n".join(i["src"] for i in self._items if i["dst"]),
+            "\n".join(i["dst"] for i in self._items if i["dst"]),
+        )
 
     def _on_failed(self, run_id: int, error: str):
         if run_id != self._run_id:

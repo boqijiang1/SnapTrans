@@ -30,10 +30,13 @@ from . import __version__, log
 from .bubble import ClipboardBubble
 from .config import GLOSSARY_PATH, GLOSSARY_TEMPLATE, load_config, save_config
 from .glass import QSS, resolve_font_family
+from .history import History, HistoryPanel
 from .lens import LensWindow
 from .ocr_engine import OcrEngine
 from .settings_dialog import SettingsDialog
 from .translator import Translator
+
+MODELS = ["glm-4-flash", "glm-4.5-flash", "glm-4-air", "glm-4-plus"]
 
 WM_HOTKEY = 0x0312
 MOD_NOREPEAT = 0x4000
@@ -183,6 +186,9 @@ class SnapTransApp(QObject):
         self.lens: LensWindow | None = None
 
         self.bubble: ClipboardBubble | None = None
+        self.lens: LensWindow | None = None
+        self.history = History()
+        self.history_panel: HistoryPanel | None = None
         self.hotkey = _HotkeyFilter()
         self.app.installNativeEventFilter(self.hotkey)
         if not self.hotkey.add("main", self.cfg.get("hotkey", "ctrl+alt+t"), self._summon):
@@ -219,6 +225,8 @@ class SnapTransApp(QObject):
         act_lens.triggered.connect(self._summon)
         act_clip = QAction(f"剪贴板翻译（{self.cfg.get('hotkey_clipboard', 'ctrl+alt+b')}）", menu)
         act_clip.triggered.connect(self._translate_clipboard)
+        act_history = QAction("翻译历史", menu)
+        act_history.triggered.connect(self._open_history)
         self.act_auto = QAction("移动后自动翻译", menu)
         self.act_auto.setCheckable(True)
         self.act_auto.setChecked(bool(self.cfg.get("auto_translate", True)))
@@ -239,10 +247,21 @@ class SnapTransApp(QObject):
         act_quit.triggered.connect(self.app.quit)
         menu.addAction(act_lens)
         menu.addAction(act_clip)
+        menu.addAction(act_history)
         menu.addSeparator()
         menu.addAction(self.act_auto)
         menu.addAction(self.act_follow)
         menu.addAction(self.act_autostart)
+        menu.addSeparator()
+        self._model_actions = []
+        model_menu = menu.addMenu(f"模型：{self.cfg.get('model', 'glm-4-flash')}")
+        for m in MODELS:
+            act = QAction(m, model_menu)
+            act.setCheckable(True)
+            act.setChecked(m == self.cfg.get("model"))
+            act.triggered.connect(lambda checked=False, mm=m: self._set_model(mm))
+            model_menu.addAction(act)
+            self._model_actions.append(act)
         menu.addSeparator()
         menu.addAction(act_glossary)
         menu.addAction(act_set)
@@ -267,8 +286,26 @@ class SnapTransApp(QObject):
     def _summon(self):
         if self.lens is None:
             self.lens = LensWindow(self.engine, self.translator, self.cfg)
+            self.lens.translated.connect(
+                lambda src, dst: self.history.add(src, dst, self.cfg.get("model", ""))
+            )
             log("翻译放大镜已创建")
         self.lens.summon_at_cursor()
+
+    def _set_model(self, model: str):
+        if model == self.cfg.get("model"):
+            return
+        self.cfg["model"] = model
+        save_config(self.cfg)
+        self.translator.cfg = self.cfg
+        for act in self._model_actions:
+            act.setChecked(act.text() == model)
+        self._tray_msg("已切换", f"翻译模型：{model}")
+
+    def _open_history(self):
+        if self.history_panel is None:
+            self.history_panel = HistoryPanel(self.history)
+        self.history_panel.open_panel()
 
     def _set_auto(self, checked: bool):
         self.cfg["auto_translate"] = bool(checked)
@@ -312,6 +349,9 @@ class SnapTransApp(QObject):
             return
         if self.bubble is None:
             self.bubble = ClipboardBubble(self.translator, self.cfg)
+            self.bubble.finished.connect(
+                lambda src, dst: self.history.add(src, dst, self.cfg.get("model", ""))
+            )
             log("划词翻译气泡已创建")
         self.bubble.summon(text)
 
@@ -335,6 +375,8 @@ class SnapTransApp(QObject):
                 self._tray_msg("热键注册失败", "；".join(failed) + "，请到设置里换一个。")
             else:
                 self._tray_msg("已保存", "设置已保存。")
+            for act in getattr(self, "_model_actions", []):
+                act.setChecked(act.text() == self.cfg.get("model"))
 
 
 def main() -> int:

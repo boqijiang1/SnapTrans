@@ -24,6 +24,7 @@ from .translator import Translator, TranslatorError
 
 
 class TranslateWorker(QThread):
+    partial = Signal(int, str)  # run_id, 已完成行的拼接
     done = Signal(int, object)  # run_id, {"text": ..., "elapsed": ...}
     fail = Signal(int, str)
 
@@ -37,7 +38,13 @@ class TranslateWorker(QThread):
         t0 = time.perf_counter()
         try:
             lines = self._text.replace("\r\n", "\n").split("\n")
-            translated = self._translator.translate_lines(lines)
+            best: list[str | None] = [None] * len(lines)
+
+            def on_line(i: int, dst: str):
+                best[i] = dst
+                self.partial.emit(self._run_id, "\n".join(b for b in best if b))
+
+            translated = self._translator.translate_lines_streaming(lines, on_line)
             self.done.emit(self._run_id, {"text": "\n".join(translated), "elapsed": time.perf_counter() - t0})
         except TranslatorError as exc:
             self.fail.emit(self._run_id, str(exc))
@@ -47,6 +54,7 @@ class TranslateWorker(QThread):
 
 class ClipboardBubble(QWidget):
     WIDTH = 460
+    finished = Signal(str, str)  # 原文, 译文（历史记录用）
 
     def __init__(self, translator: Translator, cfg: dict):
         super().__init__()
@@ -149,12 +157,17 @@ class ClipboardBubble(QWidget):
         self._set_status("⏳ 翻译中…")
         self._fit_height()
         worker = TranslateWorker(run_id, text, self._translator, self)
+        worker.partial.connect(self._on_partial)
         worker.done.connect(self._on_done)
         worker.fail.connect(self._on_fail)
         worker.finished.connect(worker.deleteLater)
         worker.finished.connect(lambda w=worker: self._forget(w))
         self._worker = worker
         worker.start()
+
+    def _on_partial(self, run_id: int, text: str):
+        if run_id == self._run_id:
+            self.trans.setText(text)
 
     def _forget(self, worker: TranslateWorker):
         if self._worker is worker:
@@ -168,6 +181,7 @@ class ClipboardBubble(QWidget):
         self.trans.setText(result["text"].strip() or "（无译文）")
         self._set_status(f"{self._cfg.get('model')} · {result['elapsed']:.1f}s", remember=True)
         self._fit_height()
+        self.finished.emit(self.orig.text(), self._last_translation)
 
     def _on_fail(self, run_id: int, error: str):
         if run_id != self._run_id:
