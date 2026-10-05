@@ -448,6 +448,7 @@ class LensWindow(QWidget):
                 self._sized_once = True
             self.show()
         self.raise_()
+        self.canvas.set_font_family(resolve_font_family(str(self._cfg.get("font_family", ""))))
         self.refresh()
 
     # ---- 截屏与翻译 ----
