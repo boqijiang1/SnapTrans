@@ -106,12 +106,12 @@ def check_widgets():
 
     # 替换模式：全部原位覆盖
     lens.canvas.set_mode("replace")
-    lens.canvas.set_content(bg, 1.0, items)
+    lens.canvas.set_items(items)
     lens.grab().save(os.path.join(out_dir, "dev_lens_replace.png"))
 
-    # 悬停模式：原文可见，模拟鼠标停在第 2 块上、动画播完的状态
+    # 悬停模式：原文实时透视（画布透明），模拟鼠标停在第 2 块上、动画播完的状态
     lens.canvas.set_mode("hover")
-    lens.canvas.set_content(bg, 1.0, items)
+    lens.canvas.set_items(items)
     lens.canvas._hover_index = 1
     lens.canvas._tip_progress = 1.0
     lens.grab().save(os.path.join(out_dir, "dev_lens_hover.png"))

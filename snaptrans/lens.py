@@ -1,10 +1,8 @@
-"""翻译放大镜：小块玻璃浮窗，浮在目标文字上方，两种显示模式：
+"""翻译放大镜：玻璃边框 + 全透明视区的真·放大镜，浮在目标文字上方。
 
-- 悬停模式（默认）：翻译后先显示原文快照，鼠标移到某句话上浮现双语对照气泡，
-  单击该行只复制该行译文；
-- 替换模式：译文按原文的位置、字号、配色原位替换，适合通读整段。
-
-定位时浮窗近乎全透明（可透视下层内容）；按 ↻ 后画布先显示截取的原样快照。
+画布内部实时透视底层内容（无冻结快照、无模糊），因此截屏（OCR / 变化检测）
+不需要任何窗口状态变化——零闪烁。译文按原文的位置、字号、配色原位替换，
+或以悬停气泡逐句对照。双击浮窗切换两种模式。
 """
 
 from __future__ import annotations
@@ -129,7 +127,7 @@ class _LensWorker(QThread):
 
 
 class _LensCanvas(QWidget):
-    """先画截取的快照；悬停模式浮出对照气泡，替换模式原位重绘译文。"""
+    """画布近乎全透明（实时透视底层内容）；悬停浮出对照气泡，替换模式原位重绘译文。"""
 
     doubleClicked = Signal()
     lineCopied = Signal(str)
@@ -139,8 +137,6 @@ class _LensCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._bg: QImage | None = None
-        self._dpr = 1.0
         self._items: list[dict] = []
         self._font = QFont("Microsoft YaHei UI")
         self._mode = self.MODE_HOVER
@@ -165,35 +161,33 @@ class _LensCanvas(QWidget):
     def mode(self) -> str:
         return self._mode
 
-    def set_content(self, bg: QImage | None, dpr: float, items: list[dict]):
-        self._bg = bg
-        self._dpr = dpr
+    def set_items(self, items: list[dict]):
         self._items = list(items)
         self._clear_hover()
         self.update()
 
     def clear(self):
-        self._bg = None
         self._items = []
         self._clear_hover()
         self.update()
 
-    def has_snapshot(self) -> bool:
-        return self._bg is not None
+    def has_items(self) -> bool:
+        return bool(self._items)
+
+    def prepare_for_capture(self):
+        """截屏前清掉悬停气泡，避免高亮/气泡混进截图。"""
+        self._clear_hover()
 
     # ---- 绘制 ----
     def paintEvent(self, event):
+        if not self._items:
+            return
         p = QPainter(self)
         clip = QPainterPath()
         clip.addRoundedRect(QRectF(self.rect()), 8, 8)
         p.setClipPath(clip)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
-        if self._bg is not None:
-            img = QImage(self._bg)
-            img.setDevicePixelRatio(self._dpr)
-            p.drawImage(0, 0, img)
         if self._mode == self.MODE_REPLACE:
             for item in self._items:
                 self._draw_replacement(p, item)
@@ -343,11 +337,10 @@ class LensWindow(QWidget):
         self._run_id = 0
         self._worker: _LensWorker | None = None
         self._items: list[dict] = []
-        self._snapshot: QImage | None = None
-        self._snapshot_dpr = 1.0
         self._last_status = ""
         self._flash_text = ""
         self._sized_once = False
+
         self._auto_enabled = bool(cfg.get("auto_translate", True))
         self._captured_geometry: QRect | None = None
         self._auto_timer = QTimer(self)
@@ -422,7 +415,7 @@ class LensWindow(QWidget):
         self.canvas.lineCopied.connect(self._on_line_copied)
         self._apply_mode(str(cfg.get("lens_mode", "hover")), save=False)
 
-    # ---- 唤出 / 刷新 ----
+    # ---- 唤出 ----
     def summon_at_cursor(self):
         """把浮窗移到鼠标处（光标落在画布区），并自动截取翻译。"""
         pos = QCursor.pos()
@@ -441,9 +434,11 @@ class LensWindow(QWidget):
         self.raise_()
         self.refresh()
 
+    # ---- 截屏与翻译 ----
     def refresh(self):
-        """截取画布正下方的屏幕区域（自身透明度归零避开遮挡），交给 OCR+翻译线程。"""
+        """截取画布正下方区域交给 OCR+翻译线程。画布近乎全透明，无需动窗口状态。"""
         self._auto_timer.stop()
+        self.canvas.prepare_for_capture()
         captured = self._capture_silent()
         if captured is None:
             return
@@ -454,10 +449,8 @@ class LensWindow(QWidget):
         self._last_trigger = time.perf_counter()
         self._run_id += 1  # 在途的旧结果作废（支持连按刷新）
         run_id = self._run_id
-        self._snapshot = crop
-        self._snapshot_dpr = dpr
         self._items = []
-        self.canvas.set_content(crop, dpr, [])  # 先显示原样快照
+        self.canvas.set_items([])
         self._set_status("⏳ 识别翻译中…")
 
         worker = _LensWorker(run_id, crop, dpr, self._engine, self._translator, self)
@@ -469,9 +462,8 @@ class LensWindow(QWidget):
         self._worker = worker
         worker.start()
 
-    # ---- 截屏与内容变化检测 ----
     def _capture_silent(self):
-        """不闪窗口抓取画布下方区域：把自身透明度归零，DWM 合成时就不含自己。
+        """截取画布正下方区域。画布近乎全透明且无模糊，截屏不动窗口、零闪烁。
         返回 (crop, 画布全局几何, dpr)，失败返回 None。"""
         canvas_tl = self.canvas.mapToGlobal(QPoint(0, 0))
         canvas_size = self.canvas.size()
@@ -480,19 +472,11 @@ class LensWindow(QWidget):
         center = canvas_tl + QPoint(canvas_size.width() // 2, canvas_size.height() // 2)
         screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
         dpr = float(screen.devicePixelRatio() or 1.0)
-
-        self.setWindowOpacity(0.0)
-        QApplication.processEvents()
-        time.sleep(0.04)
         try:
             shot = screen.grabWindow(0).toImage()
         except Exception as exc:
-            self.setWindowOpacity(1.0)
             self._set_status(f"⚠ 截屏失败：{exc}", "panelError")
             return None
-        self.setWindowOpacity(1.0)
-        QApplication.processEvents()
-
         g0 = screen.geometry().topLeft()
         local = QRect(canvas_tl, canvas_size).translated(-g0)
         x0, y0 = round(local.x() * dpr), round(local.y() * dpr)
@@ -515,7 +499,7 @@ class LensWindow(QWidget):
         return arr.astype(np.float32) / 255.0
 
     def _poll_tick(self):
-        if not self._follow_content or not self.isVisible() or self._snapshot is None:
+        if not self._follow_content or not self.isVisible() or self._items:
             return
         if self._worker is not None and self._worker.isRunning():
             return
@@ -523,10 +507,10 @@ class LensWindow(QWidget):
             return  # 用户正在拖拽
         if time.perf_counter() - self._last_trigger < 2.5:
             return  # 限流：避免流式输出时翻译追着刷新跑
-        crop = self._capture_silent()
-        if crop is None:
+        captured = self._capture_silent()
+        if captured is None:
             return
-        sig = self._signature(crop[0])
+        sig = self._signature(captured[0])
         if self._baseline_sig is None:
             self._baseline_sig = sig
             return
@@ -537,6 +521,11 @@ class LensWindow(QWidget):
 
     def set_follow_content(self, enabled: bool):
         self._follow_content = enabled
+
+    def set_auto_translate(self, enabled: bool):
+        self._auto_enabled = enabled
+        if not enabled:
+            self._auto_timer.stop()
 
     def _forget_worker(self, worker: _LensWorker):
         if self._worker is worker:
@@ -551,7 +540,7 @@ class LensWindow(QWidget):
         if run_id != self._run_id:
             return
         self._items = result["items"]
-        self.canvas.set_content(self._snapshot, self._snapshot_dpr, self._items)
+        self.canvas.set_items(self._items)
         n = len(self._items)
         if n == 0:
             self._set_status("未识别到文字 · 移动浮窗后按 ↻", remember=True)
@@ -581,18 +570,17 @@ class LensWindow(QWidget):
             self._apply_mode("hover")
             self._set_status("悬停模式 · 鼠标移到句子上浮现译文，单击复制该行", remember=True)
 
-    # ---- 移动/缩放后：快照失效恢复透视，并自动触发翻译 ----
-    def _invalidate_snapshot(self, message: str):
+    # ---- 移动/缩放后：结果失效恢复透明，并自动触发翻译 ----
+    def _invalidate_results(self, message: str):
         if not self.isVisible():
             return  # 未显示时的布局/初始定位不算用户操作
         geo = QRect(self.canvas.mapToGlobal(QPoint(0, 0)), self.canvas.size())
-        if self._snapshot is not None and geo == self._captured_geometry:
-            return  # 几何没变（如 show 引发的伪移动事件），快照仍有效
+        if self._captured_geometry is not None and geo == self._captured_geometry and not self._items:
+            return  # 几何没变（如 show 引发的伪移动事件），无需作废
         self._run_id += 1  # 在途结果作废
         self._captured_geometry = None
         self._baseline_sig = None
-        if self.canvas.has_snapshot() or self._items:
-            self._snapshot = None
+        if self._items:
             self._items = []
             self.canvas.clear()
             self._set_status(message)
@@ -601,7 +589,7 @@ class LensWindow(QWidget):
 
     def moveEvent(self, e):
         super().moveEvent(e)
-        self._invalidate_snapshot(
+        self._invalidate_results(
             "跟随移动 · 松手后自动翻译" if self._auto_enabled else "已移动 · 按 ↻ 翻译当前位置"
         )
 
@@ -609,7 +597,7 @@ class LensWindow(QWidget):
         super().resizeEvent(e)
         self._grip.move(self.width() - 18, self.height() - 18)
         self._grip.raise_()
-        self._invalidate_snapshot(
+        self._invalidate_results(
             "调整大小 · 松手后自动翻译" if self._auto_enabled else "已调整大小 · 按 ↻ 重新翻译"
         )
 
@@ -621,11 +609,6 @@ class LensWindow(QWidget):
             return
         log("自动翻译：位置调整触发")
         self.refresh()
-
-    def set_auto_translate(self, enabled: bool):
-        self._auto_enabled = enabled
-        if not enabled:
-            self._auto_timer.stop()
 
     # ---- 复制 ----
     def _copy(self):
@@ -655,6 +638,11 @@ class LensWindow(QWidget):
             self.status.setObjectName(object_name)
             self.status.style().unpolish(self.status)
             self.status.style().polish(self.status)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._grip.move(self.width() - 18, self.height() - 18)
+        self._grip.raise_()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:

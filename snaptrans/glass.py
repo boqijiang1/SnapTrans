@@ -78,8 +78,8 @@ QFrame#glassCard {
     border-radius: 14px;
 }
 QFrame#lensCard {
-    background: rgba(10, 12, 18, 46);   /* 近乎全透明：定位时可透视下层内容 */
-    border: 1px solid rgba(126, 179, 255, 80);
+    background: rgba(10, 12, 18, 26);   /* 极浅 tint：画布区近乎全透明，截屏无影响 */
+    border: 1px solid rgba(126, 179, 255, 90);
     border-radius: 10px;
 }
 QFrame#lensToolbar {
