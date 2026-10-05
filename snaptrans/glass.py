@@ -218,7 +218,12 @@ QPushButton#primary:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 rgba(140, 190, 255, 165), stop:1 rgba(100, 145, 245, 120));
 }
-QFrame#lensToolbar { background: transparent; border: none; }
+QFrame#lensToolbar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(32, 36, 50, 218), stop:1 rgba(15, 17, 27, 198));
+    border: 1px solid rgba(255, 255, 255, 46);
+    border-radius: 10px;
+}
 QLineEdit, QComboBox {
     background: rgba(255, 255, 255, 30);
     border: 1px solid rgba(255, 255, 255, 52);

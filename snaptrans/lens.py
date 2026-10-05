@@ -399,7 +399,8 @@ class _LensCanvas(QWidget):
 
 
 class LensWindow(QWidget):
-    translated = Signal(str, str)  # 原文全文, 译文全文（历史记录用）
+    translated = Signal(str, str)   # 原文全文, 译文全文（历史记录用）
+    history_requested = Signal()    # 请求打开历史面板
 
     def __init__(self, engine: OcrEngine, translator: Translator, cfg: dict):
         super().__init__()
@@ -444,6 +445,8 @@ class LensWindow(QWidget):
         lay.setSpacing(6)
 
         toolbar = DragBar()
+        toolbar.setObjectName("lensToolbar")
+        toolbar.setAttribute(Qt.WA_StyledBackground, True)
         toolbar.setFixedHeight(TOOLBAR_H)
         tlay = QHBoxLayout(toolbar)
         tlay.setContentsMargins(10, 0, 6, 0)
@@ -454,6 +457,8 @@ class LensWindow(QWidget):
         tlay.addWidget(self.status, 1)
         self.btn_mode = QPushButton("悬停")
         self.btn_mode.setToolTip("切换显示模式：悬停对照（默认）/ 全部原位替换；双击画布也可切换")
+        self.btn_history = QPushButton("历史")
+        self.btn_history.setToolTip("打开翻译历史面板")
         self.btn_refresh = QPushButton("↻ 刷新")
         self.btn_refresh.setToolTip("重新截取浮窗覆盖的区域并翻译（移动/调整大小后按）")
         self.btn_copy = QPushButton("⧉")
@@ -462,16 +467,16 @@ class LensWindow(QWidget):
         self.btn_close = QPushButton("✕")
         self.btn_close.setFixedWidth(34)
         self.btn_close.setToolTip("关闭（重新唤出按 Ctrl+Alt+T）")
-        for b in (self.btn_mode, self.btn_refresh, self.btn_copy, self.btn_close):
+        for b in (self.btn_mode, self.btn_history, self.btn_refresh, self.btn_copy, self.btn_close):
             tlay.addWidget(b)
         self.btn_mode.clicked.connect(self._toggle_mode)
+        self.btn_history.clicked.connect(self.history_requested.emit)
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_copy.clicked.connect(self._copy)
         self.btn_close.clicked.connect(self.close)
         lay.addWidget(toolbar)
 
         self.canvas = _LensCanvas()
-        self.canvas.setToolTip("悬停：移到句子上看译文，单击复制该行；双击：切换悬停/替换模式")
         lay.addWidget(self.canvas, 1)
         root.addWidget(self.card)
 

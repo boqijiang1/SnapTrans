@@ -289,6 +289,7 @@ class SnapTransApp(QObject):
             self.lens.translated.connect(
                 lambda src, dst: self.history.add(src, dst, self.cfg.get("model", ""))
             )
+            self.lens.history_requested.connect(self._open_history)
             log("翻译放大镜已创建")
         self.lens.summon_at_cursor()
 
