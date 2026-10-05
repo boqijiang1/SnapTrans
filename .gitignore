@@ -14,5 +14,8 @@ config.json
 # 本机数据
 history.json
 
+# 字体文件：汉仪字体为商业授权，请自行获取后放入（程序无字体时回退微软雅黑）
+fonts/
+
 # 开发自检产物
 dev_*.png
