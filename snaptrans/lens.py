@@ -35,7 +35,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
@@ -47,7 +46,7 @@ from PySide6.QtWidgets import (
 
 from . import log
 from .config import save_config
-from .glass import DragBar, resolve_font_family
+from .glass import DragBar, GlassCard, resolve_font_family
 from .ocr_engine import OcrEngine, qimage_to_bgr
 from .translator import Translator, TranslatorError
 
@@ -208,14 +207,15 @@ class _LensCanvas(QWidget):
         if rect.right() < 0 or rect.bottom() < 0 or rect.x() > self.width() or rect.y() > self.height():
             return
         text: str = item["dst"]
-        # 统一字号：全区域一行一个大小；仅当译文远宽于原文框时才缩小这一行
+        # 统一字号：全区域一行一个大小；译文过宽（原文框 1.25 倍或超出画布）才缩小这一行
         size = float(self._base_size)
         font = QFont(self._font)
+        max_w = min(rect.width() * 1.25, self.width() - rect.x() - 4.0)
         fm = None
         for _ in range(60):
             font.setPixelSize(int(size))
             fm = QFontMetricsF(font)
-            if fm.horizontalAdvance(text) <= rect.width() * 1.25 or size <= 10.0:
+            if fm.horizontalAdvance(text) <= max_w or size <= 10.0:
                 break
             size -= 1.0
         if fm is None:
@@ -377,14 +377,12 @@ class LensWindow(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.card = QFrame(objectName="lensCard")
+        self.card = GlassCard("frame", radius=18, rim=10)
         lay = QVBoxLayout(self.card)
-        lay.setContentsMargins(1, 1, 1, 1)
-        lay.setSpacing(0)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(6)
 
         toolbar = DragBar()
-        toolbar.setObjectName("lensToolbar")
-        toolbar.setAttribute(Qt.WA_StyledBackground, True)
         toolbar.setFixedHeight(TOOLBAR_H)
         tlay = QHBoxLayout(toolbar)
         tlay.setContentsMargins(10, 0, 6, 0)

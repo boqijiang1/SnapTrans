@@ -29,7 +29,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMenu, QSystemTrayIcon
 from . import __version__, log
 from .bubble import ClipboardBubble
 from .config import GLOSSARY_PATH, GLOSSARY_TEMPLATE, load_config, save_config
-from .glass import QSS
+from .glass import QSS, resolve_font_family
 from .lens import LensWindow
 from .ocr_engine import OcrEngine
 from .settings_dialog import SettingsDialog
@@ -174,10 +174,10 @@ def _make_icon() -> QIcon:
 
 
 class SnapTransApp(QObject):
-    def __init__(self, app: QApplication):
+    def __init__(self, app: QApplication, cfg: dict):
         super().__init__()
         self.app = app
-        self.cfg = load_config()
+        self.cfg = cfg
         self.engine = OcrEngine(self.cfg.get("invert_threshold", 110))
         self.translator = Translator(self.cfg)
         self.lens: LensWindow | None = None
@@ -350,14 +350,19 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("SnapTrans")
     app.setApplicationDisplayName("SnapTrans")
-    app.setFont(QFont("Microsoft YaHei UI", 10))
-    app.setStyleSheet(QSS)
+
+    cfg = load_config()
+    font_family = resolve_font_family(str(cfg.get("font_family", "")))
+    app.setFont(QFont(font_family, 10))
+    app.setStyleSheet(QSS.replace("__FONT__", font_family))  # 工具界面与译文同一字体
+
     app.setQuitOnLastWindowClosed(False)  # 托盘常驻，关放大镜不退出
     app.setWindowIcon(_make_icon())
 
-    controller = SnapTransApp(app)  # 局部变量保持引用存活，防止控制器被垃圾回收
+    controller = SnapTransApp(app, cfg)  # 局部变量保持引用存活，防止控制器被垃圾回收
     log(
         f"SnapTrans v{__version__} 已启动 · 自动翻译"
         f"{'开' if controller.cfg.get('auto_translate') else '关'} · 热键 {controller.cfg.get('hotkey')}"
+        f" · 字体 {font_family}"
     )
     return app.exec()

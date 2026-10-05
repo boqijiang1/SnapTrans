@@ -1,12 +1,13 @@
-"""玻璃态样式：Win 亚克力模糊背景 + 全局 QSS + 可拖拽条。"""
+"""液态玻璃样式：自绘玻璃卡片、Win 亚克力、拖拽条、字体解析与全局 QSS。"""
 
 from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QFrame, QWidget
 
 _ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
 _WCA_ACCENT_POLICY = 19
@@ -70,6 +71,79 @@ class DragBar(QWidget):
         super().mouseReleaseEvent(e)
 
 
+class GlassCard(QFrame):
+    """液态玻璃卡片（自绘）：
+    - variant='solid'：完整玻璃面（划词气泡、设置窗口）——深色渐变基底 + 顶部光泽 + 对角高光；
+    - variant='frame'：玻璃边框包着透明视区（翻译放大镜）——视区保持全透明，截屏零污染。
+    """
+
+    def __init__(self, variant: str = "solid", radius: float = 18.0, rim: int = 10, parent=None):
+        super().__init__(parent)
+        self._variant = variant
+        self._radius = radius
+        self._rim = rim
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = float(self.width()), float(self.height())
+        outer = QRectF(0.75, 0.75, w - 1.5, h - 1.5)
+        path = QPainterPath()
+        path.addRoundedRect(outer, self._radius, self._radius)
+
+        if self._variant == "solid":
+            base = QLinearGradient(0, 0, 0, h)
+            base.setColorAt(0, QColor(36, 40, 56, 208))
+            base.setColorAt(1, QColor(13, 15, 23, 202))
+            p.fillPath(path, base)
+            self._paint_sheen(p, path, h)
+        else:
+            rim = float(self._rim)
+            inner_r = max(self._radius - rim, 6.0)
+            viewport = QPainterPath()
+            viewport.addRoundedRect(
+                QRectF(rim + 0.5, rim + 0.5, w - 2 * rim - 1, h - 2 * rim - 1), inner_r, inner_r
+            )
+            frame = path.subtracted(viewport)
+            base = QLinearGradient(0, 0, 0, h)
+            base.setColorAt(0, QColor(255, 255, 255, 84))
+            base.setColorAt(1, QColor(150, 170, 215, 46))
+            p.fillPath(frame, base)
+            self._paint_sheen(p, frame, h)
+            # 视区内缘：暗线定深度，亮线给反光
+            p.setPen(QPen(QColor(0, 0, 0, 60), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(viewport)
+            vp_out = QPainterPath()
+            vp_out.addRoundedRect(
+                QRectF(rim - 0.5, rim - 0.5, w - 2 * rim + 1, h - 2 * rim + 1),
+                inner_r + 1,
+                inner_r + 1,
+            )
+            p.setPen(QPen(QColor(255, 255, 255, 80), 1))
+            p.drawPath(vp_out)
+
+        # 高光描边：左上亮、右下暗，模拟顶部来光
+        border = QLinearGradient(0, 0, w, h)
+        border.setColorAt(0, QColor(255, 255, 255, 200))
+        border.setColorAt(0.45, QColor(255, 255, 255, 76))
+        border.setColorAt(1, QColor(255, 255, 255, 42))
+        p.setPen(QPen(QBrush(border), 1.5))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        p.end()
+
+    def _paint_sheen(self, p: QPainter, path: QPainterPath, h: float):
+        sheen = QLinearGradient(0, 0, 0, h * 0.55)
+        sheen.setColorAt(0, QColor(255, 255, 255, 58))
+        sheen.setColorAt(1, QColor(255, 255, 255, 0))
+        p.fillPath(path, sheen)
+        diag = QLinearGradient(0, 0, h * 0.9, h)  # 斜向液态高光
+        diag.setColorAt(0, QColor(255, 255, 255, 30))
+        diag.setColorAt(0.5, QColor(255, 255, 255, 0))
+        p.fillPath(path, diag)
+
+
 def resolve_font_family(preferred: str) -> str:
     """解析译文字体：先加载 fonts/ 目录的字体文件，再按名字找系统字体族，
     大小写/空格差异做模糊匹配；都找不到回退微软雅黑。"""
@@ -111,66 +185,62 @@ def resolve_font_family(preferred: str) -> str:
 
 
 QSS = """
-* { font-family: 'Microsoft YaHei UI', 'Microsoft YaHei'; color: #EAF0FF; }
-QFrame#glassCard {
-    background: rgba(18, 20, 30, 150);
-    border: 1px solid rgba(255, 255, 255, 36);
-    border-radius: 14px;
-}
-QFrame#lensCard {
-    background: rgba(10, 12, 18, 26);   /* 极浅 tint：画布区近乎全透明，截屏无影响 */
-    border: 1px solid rgba(126, 179, 255, 90);
+* { font-family: '__FONT__'; color: #F0F4FF; }
+QLabel#panelTitle { font-size: 13pt; font-weight: 600; }
+QLabel#panelStatus { font-size: 9.5pt; color: rgba(240, 244, 255, 150); }
+QLabel#panelError  { font-size: 9.5pt; color: #FFB4A8; }
+QLabel#panelBody { font-size: 12pt; background: transparent; }
+QLabel#fieldLabel { font-size: 10.5pt; color: rgba(240, 244, 255, 180); }
+QToolButton, QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255, 255, 255, 70), stop:0.5 rgba(255, 255, 255, 34), stop:1 rgba(255, 255, 255, 16));
+    border: 1px solid rgba(255, 255, 255, 58);
     border-radius: 10px;
+    padding: 4px 12px;
+    font-size: 11pt;
 }
-QFrame#lensToolbar {
-    background: rgba(12, 14, 20, 205);
-    border: none;
-    border-radius: 8px;
+QToolButton:hover, QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(150, 190, 255, 95), stop:0.5 rgba(110, 160, 255, 55), stop:1 rgba(90, 130, 220, 35));
+    border: 1px solid rgba(170, 205, 255, 150);
 }
-QLabel#panelTitle { font-size: 11pt; font-weight: 600; }
-QLabel#panelStatus { font-size: 8.5pt; color: rgba(234, 240, 255, 145); }
-QLabel#panelError  { font-size: 8.5pt; color: #FFB4A8; }
-QLabel#panelBody { font-size: 11pt; background: transparent; }
-QLabel#fieldLabel { font-size: 9.5pt; color: rgba(234, 240, 255, 175); }
-QToolButton {
-    background: rgba(255, 255, 255, 22);
-    border: 1px solid rgba(255, 255, 255, 32);
-    border-radius: 8px;
-    padding: 3px 10px;
-    font-size: 9.5pt;
+QToolButton:pressed, QPushButton:pressed {
+    background: rgba(60, 80, 130, 110);
+    border: 1px solid rgba(140, 175, 255, 110);
 }
-QToolButton:hover { background: rgba(126, 179, 255, 60); border-color: rgba(126, 179, 255, 130); }
-QToolButton:pressed { background: rgba(126, 179, 255, 95); }
-QPushButton {
-    background: rgba(255, 255, 255, 22);
-    border: 1px solid rgba(255, 255, 255, 32);
-    border-radius: 8px;
-    padding: 5px 14px;
+QPushButton#primary {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(120, 170, 255, 130), stop:1 rgba(80, 120, 230, 90));
+    border: 1px solid rgba(160, 195, 255, 170);
 }
-QPushButton:hover { background: rgba(255, 255, 255, 40); }
-QPushButton#primary { background: rgba(96, 150, 255, 110); border-color: rgba(126, 179, 255, 150); }
-QPushButton#primary:hover { background: rgba(96, 150, 255, 150); }
+QPushButton#primary:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(140, 190, 255, 165), stop:1 rgba(100, 145, 245, 120));
+}
+QFrame#lensToolbar { background: transparent; border: none; }
 QLineEdit, QComboBox {
-    background: rgba(255, 255, 255, 24);
-    border: 1px solid rgba(255, 255, 255, 42);
-    border-radius: 8px;
-    padding: 5px 8px;
-    selection-background-color: rgba(96, 150, 255, 160);
+    background: rgba(255, 255, 255, 30);
+    border: 1px solid rgba(255, 255, 255, 52);
+    border-radius: 10px;
+    padding: 5px 9px;
+    font-size: 11pt;
+    selection-background-color: rgba(96, 150, 255, 170);
 }
-QLineEdit:focus, QComboBox:focus { border-color: rgba(126, 179, 255, 160); }
+QLineEdit:focus, QComboBox:focus { border: 1px solid rgba(150, 195, 255, 175); }
 QComboBox QAbstractItemView {
-    background: rgba(24, 26, 36, 245);
-    border: 1px solid rgba(255, 255, 255, 40);
-    selection-background-color: rgba(96, 150, 255, 140);
+    background: rgba(24, 26, 36, 248);
+    border: 1px solid rgba(255, 255, 255, 46);
+    border-radius: 8px;
+    selection-background-color: rgba(96, 150, 255, 150);
 }
 QScrollArea { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-QScrollBar::handle:vertical { background: rgba(255, 255, 255, 55); border-radius: 4px; min-height: 28px; }
-QScrollBar::handle:vertical:hover { background: rgba(255, 255, 255, 85); }
+QScrollBar::handle:vertical { background: rgba(255, 255, 255, 62); border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: rgba(255, 255, 255, 95); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QMenu { background: rgba(24, 26, 36, 242); border: 1px solid rgba(255, 255, 255, 40); border-radius: 10px; padding: 6px; }
-QMenu::item { padding: 6px 24px; border-radius: 6px; }
-QMenu::item:selected { background: rgba(126, 179, 255, 75); }
-QMenu::separator { height: 1px; background: rgba(255, 255, 255, 32); margin: 4px 8px; }
+QMenu { background: rgba(24, 26, 38, 238); border: 1px solid rgba(255, 255, 255, 48); border-radius: 12px; padding: 7px; font-size: 11pt; }
+QMenu::item { padding: 7px 26px; border-radius: 8px; }
+QMenu::item:selected { background: rgba(126, 179, 255, 82); }
+QMenu::separator { height: 1px; background: rgba(255, 255, 255, 36); margin: 5px 10px; }
 """

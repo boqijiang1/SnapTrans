@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import log
-from .glass import DragBar, enable_acrylic, resolve_font_family
+from .glass import DragBar, GlassCard, enable_acrylic, resolve_font_family
 from .translator import Translator, TranslatorError
 
 
@@ -63,7 +63,7 @@ class ClipboardBubble(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 18)
-        self.card = QFrame(objectName="glassCard")
+        self.card = GlassCard("solid", radius=18)
         lay = QVBoxLayout(self.card)
         lay.setContentsMargins(14, 10, 10, 12)
         lay.setSpacing(8)

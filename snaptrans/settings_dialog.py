@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .glass import DragBar, enable_acrylic
+from .glass import DragBar, GlassCard, enable_acrylic
 
 MODELS = ["glm-4-flash", "glm-4.5-flash", "glm-4-air", "glm-4-plus"]
 
@@ -26,13 +26,13 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
-        self.setFixedSize(480, 430)
+        self.setFixedSize(500, 460)
         self._centered = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 20)
 
-        card = QFrame(objectName="glassCard")
+        card = GlassCard("solid", radius=18)
         lay = QVBoxLayout(card)
         lay.setContentsMargins(18, 12, 18, 16)
         lay.setSpacing(10)
