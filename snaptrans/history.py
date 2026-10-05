@@ -1,4 +1,4 @@
-"""翻译历史：最近 100 条，持久化到 history.json；玻璃态历史面板。"""
+"""翻译历史：最近 100 条，持久化到 history.json；日期分组 + 卡片流的玻璃面板。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -41,7 +42,8 @@ class History:
         if not dst.strip():
             return
         self.entries.insert(0, {
-            "time": time.strftime("%m-%d %H:%M"),
+            "date": time.strftime("%m-%d"),
+            "time": time.strftime("%H:%M"),
             "src": src.strip()[:300],
             "dst": dst.strip()[:2000],
             "model": model,
@@ -62,31 +64,35 @@ class History:
             pass
 
 
-class _EntryRow(QFrame):
-    """单条历史：上行是时间/模型，下行是译文；单击整行复制译文。"""
+class _EntryCard(QFrame):
+    """单条历史的玻璃小卡：译文为主角，原文淡色陪衬；单击复制译文。"""
 
     copied = Signal(str)
 
-    def __init__(self, entry: dict, index: int):
+    def __init__(self, entry: dict):
         super().__init__()
         self._dst = entry.get("dst", "")
-        self.setObjectName("historyRow")
+        self.setObjectName("historyCard")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("单击复制译文")
+
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 8)
-        lay.setSpacing(3)
-        head = QLabel(f"{entry.get('time', '')} · {entry.get('model', '')}", objectName="panelStatus")
-        body = QLabel(entry.get("dst", ""), objectName="panelBody")
-        body.setWordWrap(True)
-        body.setTextFormat(Qt.PlainText)
-        src = entry.get("src", "").replace("\n", " ")
+        lay.setContentsMargins(12, 9, 12, 9)
+        lay.setSpacing(4)
+
+        dst = QLabel(self._dst, objectName="historyDst")
+        dst.setWordWrap(True)
+        dst.setTextFormat(Qt.PlainText)
+        lay.addWidget(dst)
+
+        src = entry.get("src", "").replace("\n", "  ")
         if src:
-            src_label = QLabel(f"原文：{src[:120]}", objectName="panelStatus")
+            src_label = QLabel(f"{src[:140]}", objectName="historySrc")
             src_label.setWordWrap(True)
             lay.addWidget(src_label)
-        lay.addWidget(head)
-        lay.addWidget(body)
-        if index % 2 == 1:
-            self.setStyleSheet("QFrame#historyRow { background: rgba(255,255,255,14); border-radius: 8px; }")
+
+        meta = QLabel(f"{entry.get('time', '')} · {entry.get('model', '')}", objectName="historyMeta")
+        lay.addWidget(meta)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and self._dst:
@@ -95,7 +101,7 @@ class _EntryRow(QFrame):
 
 
 class HistoryPanel(QWidget):
-    """历史面板：单击条目复制译文，可清空。"""
+    """历史面板：筛选框 + 日期分组 + 卡片流；单击卡片复制译文。"""
 
     def __init__(self, history: History):
         super().__init__()
@@ -108,7 +114,7 @@ class HistoryPanel(QWidget):
         root.setContentsMargins(12, 12, 12, 18)
         card = GlassCard("solid", radius=18)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 10, 10, 12)
+        lay.setContentsMargins(14, 10, 12, 12)
         lay.setSpacing(8)
 
         header = DragBar()
@@ -129,24 +135,21 @@ class HistoryPanel(QWidget):
         hlay.addWidget(btn_close)
         lay.addWidget(header)
 
-        line = QFrame()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background: rgba(255,255,255,30); border: none;")
-        lay.addWidget(line)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("筛选：输入关键词，按原文或译文匹配")
+        self.filter_edit.textChanged.connect(lambda _t: self._rebuild())
+        lay.addWidget(self.filter_edit)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
         self.list_host = QWidget()
         self.list_lay = QVBoxLayout(self.list_host)
-        self.list_lay.setContentsMargins(0, 2, 6, 2)
-        self.list_lay.setSpacing(6)
+        self.list_lay.setContentsMargins(0, 2, 4, 2)
+        self.list_lay.setSpacing(8)
         self.list_lay.addStretch(1)
         self.scroll.setWidget(self.list_host)
         lay.addWidget(self.scroll, 1)
-
-        hint = QLabel("单击条目复制译文 · 数据保存在本机 history.json", objectName="panelStatus")
-        lay.addWidget(hint)
 
         root.addWidget(card)
         shadow = QGraphicsDropShadowEffect(self)
@@ -155,45 +158,72 @@ class HistoryPanel(QWidget):
         shadow.setColor(QColor(0, 0, 0, 70))
         card.setGraphicsEffect(shadow)
 
-        self.setFixedSize(500, 560)
+        self.setFixedSize(540, 620)
 
     # ---- 展示 ----
     def open_panel(self):
+        self.filter_edit.clear()
         self._rebuild()
         if not self.isVisible():
             self.show()
         self.raise_()
 
+    def _group_label(self, entry: dict) -> str:
+        date = entry.get("date") or entry.get("time", "")[:5]
+        today = time.strftime("%m-%d")
+        yesterday = time.strftime("%m-%d", time.localtime(time.time() - 86400))
+        if date == today:
+            return "今天"
+        if date == yesterday:
+            return "昨天"
+        return date or "更早"
+
     def _rebuild(self):
+        keyword = self.filter_edit.text().strip().lower()
+        entries = self._history.entries
+        if keyword:
+            entries = [
+                e for e in entries
+                if keyword in e.get("dst", "").lower() or keyword in e.get("src", "").lower()
+            ]
+        self.status.setText(f"{len(entries)} 条")
+
         while self.list_lay.count() > 1:  # 末尾是 stretch
             item = self.list_lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        entries = self._history.entries
-        self.status.setText(f"{len(entries)} 条")
+
         if not entries:
-            empty = QLabel("还没有翻译记录", objectName="panelStatus")
+            empty = QLabel("没有匹配的翻译记录", objectName="panelStatus")
+            empty.setAlignment(Qt.AlignCenter)
             self.list_lay.insertWidget(0, empty)
             return
-        for i, entry in enumerate(entries):
-            row = _EntryRow(entry, i)
-            row.copied.connect(self._copy)
-            self.list_lay.insertWidget(i, row)
+
+        row = 0
+        last_group = None
+        for entry in entries:
+            group = self._group_label(entry)
+            if group != last_group:  # 日期分组标题
+                head = QLabel(group, objectName="sectionHeader")
+                self.list_lay.insertWidget(row, head)
+                row += 1
+                last_group = group
+            card = _EntryCard(entry)
+            card.copied.connect(self._copy)
+            self.list_lay.insertWidget(row, card)
+            row += 1
 
     def _copy(self, text: str):
         QGuiApplication.clipboard().setText(text)
-        self._flash("已复制该条译文 ✓")
-
-    def _clear(self):
-        self._history.clear()
-        self._rebuild()
-
-    def _flash(self, text: str):
-        self.status.setText(text)
+        self.status.setText("已复制译文 ✓")
         self.status.setStyleSheet("color: #9FE6B8;")
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(1400, lambda: self.status.setStyleSheet(""))
+
+    def _clear(self):
+        self._history.clear()
+        self._rebuild()
 
     def showEvent(self, e):
         super().showEvent(e)

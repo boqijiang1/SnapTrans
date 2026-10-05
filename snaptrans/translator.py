@@ -11,14 +11,25 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 SYSTEM_PROMPT = """你是精准的英译中翻译引擎，擅长软件与 AI 领域的文本。用户发来若干行带编号的英文文本，可能来自软件界面（按钮、菜单），也可能是插件介绍、说明文档等连续文字。请逐行翻译成简体中文：
-1. 回复同样逐行带相同编号，一行不多、一行不少，不合并、不拆分；
+1. 回复必须同样逐行带相同编号，一行不多、一行不少，不合并、不拆分；
 2. 界面按钮、菜单等短语用中文软件惯用译法（Copy→复制、Settings→设置），简短自然；
 3. 句子和段落必须准确、通顺、专业，符合中文表达习惯，不要生硬直译，不要漏译信息；
 4. 专有名词、产品名、代码、命令、变量名、路径、URL 和占位符（%s、{0} 等）保持原样；AI 领域术语按业界通用译法（prompt→提示词、model→模型、plugin→插件、token→token、context→上下文）；
-5. 只输出编号译文行，不要解释、不要空行、不要代码块。"""
+5. 以 … 结尾的行说明原文在界面上被截断了：先结合其他行判断可见部分最可能的完整含义，再按完整含义翻译，并在译文结尾保留 …；若可见部分无法判断（如孤立字母碎片），保留原文并在结尾加 …，绝不要把截断碎片臆译成无关的中文词；
+6. 只输出编号译文行，不要解释、不要空行、不要代码块。"""
 
 _LETTERS = re.compile(r"[A-Za-z]{2}")
 _NUM_PREFIX = re.compile(r"^(\d+)\s*[.、)）：:]\s*(.+)$")
+_ELLIPSIS = ("。。。", "...", "。。", "…", "⋯")  # 长的先匹配
+
+
+def _split_truncation(text: str) -> tuple[str, bool]:
+    """识别界面截断：剥掉结尾的省略号变体，返回 (净化文本, 是否截断)。"""
+    t = text.rstrip()
+    for e in _ELLIPSIS:
+        if t.endswith(e):
+            return t[: -len(e)].rstrip(), True
+    return t, False
 
 
 class TranslatorError(RuntimeError):
@@ -104,54 +115,78 @@ class Translator:
         return SYSTEM_PROMPT + f"\n\n术语表（遇到下列词语必须严格按此翻译）：\n{lines}"
 
     def translate_lines(self, texts: list[str]) -> list[str]:
-        """非流式逐行翻译（一次性返回）。行数多时分块并行请求。"""
+        """非流式逐行翻译（一次性返回）。行数多时分块并行请求。
+        界面截断行（结尾 …/...）自动规范化并在译文中保留截断特征。"""
+        norm: list[str] = []
+        trunc: list[bool] = []
+        for t in texts:
+            clean, cut = _split_truncation(t)
+            norm.append(clean)
+            trunc.append(cut)
         unique: list[str] = []
         seen: set[str] = set()
-        for t in texts:
+        for t in norm:
             if is_translatable(t) and t not in self._cache and t not in seen:
                 seen.add(t)
                 unique.append(t)
         chunks = [unique[i : i + self.BATCH] for i in range(0, len(unique), self.BATCH)]
-        if not chunks:
-            return [t if not is_translatable(t) else self._cache.get(t, t) for t in texts]
-        if len(chunks) == 1:
-            batch_results = [self._request_batch(chunks[0])]
-        else:
+        if len(chunks) > 1:
             with ThreadPoolExecutor(max_workers=min(3, len(chunks))) as pool:
                 batch_results = list(pool.map(self._request_batch, chunks))
+        else:
+            batch_results = [self._request_batch(chunks[0])] if chunks else []
         for chunk, translated in zip(chunks, batch_results):
             for src, dst in zip(chunk, translated):
                 self._cache[src] = dst
                 if len(self._cache) > self.CACHE_MAX:
                     self._cache.pop(next(iter(self._cache)))
-        return [t if not is_translatable(t) else self._cache.get(t, t) for t in texts]
+        out: list[str] = []
+        for i, t in enumerate(texts):
+            if not is_translatable(norm[i]):
+                out.append(t)  # 纯符号行原样保留（含省略号本身）
+                continue
+            dst = self._cache.get(norm[i], norm[i])
+            if trunc[i] and dst and not dst.endswith("…"):
+                dst += "…"  # 原文被截断：译文必须保留截断特征
+            out.append(dst)
+        return out
 
     def translate_lines_streaming(self, texts: list[str], on_line) -> list[str]:
         """流式逐行翻译。on_line(text_index, translated) 会随进度多次调用：
         缓存命中与纯符号行立即回调，其余行在流式响应中每完成一行就回调一次。
         返回完整译文列表（与 translate_lines 一致），并写入缓存。"""
         results: list[str | None] = [None] * len(texts)
+        norm: list[str] = []
+        trunc: list[bool] = []
+        for t in texts:
+            clean, cut = _split_truncation(t)
+            norm.append(clean)
+            trunc.append(cut)
+
+        def _emit(i: int, dst: str):
+            if trunc[i] and dst and not dst.endswith("…"):
+                dst += "…"  # 截断特征守卫：原文带省略号，译文也必须带
+            results[i] = dst
+            on_line(i, dst)
+
         pending: dict[str, list[int]] = {}
         for i, t in enumerate(texts):
-            if not is_translatable(t):
-                results[i] = t
-                on_line(i, t)
-            elif t in self._cache:
-                results[i] = self._cache[t]
-                on_line(i, self._cache[t])
+            if not is_translatable(norm[i]):
+                _emit(i, t)  # 纯符号行原样
+            elif norm[i] in self._cache:
+                _emit(i, self._cache[norm[i]])
             else:
-                pending.setdefault(t, []).append(i)
+                pending.setdefault(norm[i], []).append(i)
 
         unique = list(pending.keys())
         chunks = [unique[i : i + self.BATCH] for i in range(0, len(unique), self.BATCH)]
         for chunk in chunks:
             index_lists = [pending[t] for t in chunk]
-            self._request_batch_streaming(chunk, index_lists, results, on_line)
+            self._request_batch_streaming(chunk, index_lists, results, _emit)
 
         for i, t in enumerate(texts):
             if results[i] is None:
-                results[i] = self._cache.get(t, t)
-                on_line(i, results[i])
+                _emit(i, self._cache.get(norm[i], norm[i]))
         return results
 
     def _request_batch_streaming(self, lines: list[str], index_lists: list[list[int]],

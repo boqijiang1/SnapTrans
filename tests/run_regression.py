@@ -253,6 +253,30 @@ def gui_checks():
     record("隐形命中区像素", alpha > 0, f"alpha={alpha}")
 
 
+def check_truncation():
+    from snaptrans.translator import Translator, _split_truncation
+
+    clean, cut = _split_truncation("manufacture…")
+    assert clean == "manufacture" and cut
+    clean2, cut2 = _split_truncation("man...")
+    assert clean2 == "man" and cut2
+    clean3, cut3 = _split_truncation("hello world")
+    assert clean3 == "hello world" and not cut3
+
+    tr = Translator({"api_key": "x"})
+    tr._request_batch = lambda lines: ["制造" if l == "manufacture" else l for l in lines]
+    out = tr.translate_lines(["manufacture…", "hello"])
+    assert out[0].endswith("…") and "制造" in out[0], out  # 截断特征保留
+    assert out[1] == "hello", out
+
+    # 模型原样返回英文碎片时，原文（含省略号）保持可见而非臆译
+    tr2 = Translator({"api_key": "x"})
+    tr2._request_batch = lambda lines: [l for l in lines]  # 模拟模型原样返回
+    out2 = tr2.translate_lines(["man…"])
+    assert out2 == ["man…"], out2
+    record("截断行识别与省略号守卫", True)
+
+
 if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication
 
@@ -260,6 +284,7 @@ if __name__ == "__main__":
     check_parse_reply()
     check_stream_emitter()
     check_glossary()
+    check_truncation()
     check_font_and_size()
     try:
         gui_checks()

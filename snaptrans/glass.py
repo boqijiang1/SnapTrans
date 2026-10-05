@@ -192,6 +192,19 @@ QLabel#panelStatus { font-size: 9.5pt; color: rgba(240, 244, 255, 150); }
 QLabel#panelError  { font-size: 9.5pt; color: #FFB4A8; }
 QLabel#panelBody { font-size: 12pt; background: transparent; }
 QLabel#fieldLabel { font-size: 10.5pt; color: rgba(240, 244, 255, 180); }
+QFrame#historyCard {
+    background: rgba(255, 255, 255, 20);
+    border: 1px solid rgba(255, 255, 255, 26);
+    border-radius: 10px;
+}
+QFrame#historyCard:hover {
+    background: rgba(255, 255, 255, 36);
+    border: 1px solid rgba(150, 195, 255, 110);
+}
+QLabel#historyDst { font-size: 12pt; }
+QLabel#historySrc { font-size: 9pt; color: rgba(240, 244, 255, 118); }
+QLabel#historyMeta { font-size: 8.5pt; color: rgba(240, 244, 255, 100); }
+QLabel#sectionHeader { font-size: 10.5pt; color: rgba(126, 179, 255, 210); font-weight: 600; }
 QToolButton, QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 rgba(255, 255, 255, 58), stop:0.5 rgba(255, 255, 255, 28), stop:1 rgba(255, 255, 255, 12));
